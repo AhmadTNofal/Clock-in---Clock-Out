@@ -12,11 +12,18 @@ Two clocking paths exist:
   calls ``/commit``. That pause is the whole point: without it, walking past the
   camera two hours into a shift would clock you out.
 * **Button press** - ``/scan`` recognises and records in one step, for the Scan,
-  Clock in and Clock out buttons. A pressed button states intent, so it may
-  override the hands-free interval.
+  Clock in and Clock out buttons.
+
+Whoever is recognised is clocked to the opposite of their current state: clocked
+in becomes clocked out, clocked out becomes clocked in. Nothing is ever refused
+for having clocked recently.
 """
 
 from __future__ import annotations
+
+import secrets
+import threading
+import time
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -36,6 +43,28 @@ _CONFIRM_SALT = "kiosk-auto-confirm"
 
 def _confirm_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt=_CONFIRM_SALT)
+
+
+# Confirmation tokens are single use. This replaces the old minimum-interval rule
+# as the protection against a captured or double-submitted token: the interval
+# also blocked genuine clocking, whereas consuming the token blocks only the
+# replay. Bounded and short-lived, so it needs no storage of its own - the same
+# reasoning as the in-process rate limiter in app/security.py.
+_used_tokens: dict[str, float] = {}
+_used_tokens_lock = threading.Lock()
+
+
+def _consume_token(nonce: str, ttl: int) -> bool:
+    """Record *nonce* as used. Returns False if it had already been used."""
+    now = time.monotonic()
+    with _used_tokens_lock:
+        for key, expires in list(_used_tokens.items()):
+            if expires <= now:
+                del _used_tokens[key]
+        if nonce in _used_tokens:
+            return False
+        _used_tokens[nonce] = now + ttl
+        return True
 
 
 def _confirm_max_age() -> int:
@@ -62,11 +91,12 @@ def index():
         auto_presence_threshold=current_app.config["AUTO_PRESENCE_THRESHOLD"],
         auto_scan_frames=current_app.config["AUTO_SCAN_FRAMES"],
         auto_frame_gap_ms=current_app.config["AUTO_FRAME_GAP_MS"],
-        auto_min_interval_seconds=current_app.config["AUTO_MIN_INTERVAL_SECONDS"],
         capture_max_width=current_app.config["CAPTURE_MAX_WIDTH"],
         auto_require_departure=current_app.config["AUTO_REQUIRE_DEPARTURE"],
         auto_departure_ms=current_app.config["AUTO_DEPARTURE_MS"],
         auto_rearm_seconds=current_app.config["AUTO_REARM_SECONDS"],
+        auto_latched_poll_ms=current_app.config["AUTO_LATCHED_POLL_MS"],
+        auto_idle_poll_ms=current_app.config["AUTO_IDLE_POLL_MS"],
     )
 
 
@@ -141,10 +171,24 @@ def _identify(frames, *, automatic: bool):
             current_app.logger.info(
                 "Kiosk scan refused: %s (best score %.3f)", outcome.code, score
             )
-        return None, score, (
-            jsonify(ok=False, code=outcome.code, message=outcome.message),
-            200,
-        )
+        elif outcome.code.startswith("liveness_"):
+            # Worth logging even when hands-free: a liveness refusal means a real
+            # person was in front of the camera and was turned away, which is the
+            # kind of thing that gets reported as "it just does not work".
+            current_app.logger.info(
+                "Hands-free liveness refusal: %s (motion %.2f, consistency %.3f)",
+                outcome.code,
+                outcome.liveness.motion if outcome.liveness else -1.0,
+                outcome.liveness.consistency if outcome.liveness else -1.0,
+            )
+
+        body = {"ok": False, "code": outcome.code, "message": outcome.message}
+        if outcome.liveness is not None:
+            # Surfaced so the ?debug=1 overlay can show why, rather than leaving
+            # somebody guessing at an unexplained refusal.
+            body["motion"] = round(outcome.liveness.motion, 2)
+            body["consistency"] = round(outcome.liveness.consistency, 3)
+        return None, score, (jsonify(**body), 200)
 
     employee = db.session.get(Employee, outcome.employee_id)
     if employee is None or not employee.is_active:
@@ -261,33 +305,17 @@ def api_identify():
     if refusal:
         return refusal
 
-    # Nothing has been written, so work out what *would* happen.
-    interval = int(current_app.config["AUTO_MIN_INTERVAL_SECONDS"])
-    previous = attendance.last_event(employee.id)
-    if previous is not None:
-        age = (utcnow() - previous.occurred_at).total_seconds()
-        if age < interval:
-            # Clocked recently. Report the state and offer no token, so simply
-            # standing near the kiosk cannot produce a second entry.
-            tz = get_timezone(current_app.config["TIMEZONE"])
-            verb = "in" if previous.direction == "in" else "out"
-            return jsonify(
-                ok=True,
-                code="already_clocked",
-                message=f"Already clocked {verb}, {employee.first_name}.",
-                employee=_employee_payload(employee),
-                direction=previous.direction,
-                pending=False,
-                occurred_at=to_local(previous.occurred_at, tz).strftime("%H:%M:%S"),
-                seconds_until_next=max(0, int(interval - age)),
-            )
-
+    # Simply the opposite of whatever they are now: clocked in becomes clocked
+    # out, clocked out becomes clocked in. Nothing refuses on the grounds of
+    # having clocked recently - the browser's departure check is what stops one
+    # approach clocking twice.
     direction = attendance.next_direction(employee.id)
     token = _confirm_serializer().dumps(
         {
             "employee_id": employee.id,
             "direction": direction,
             "score": round(score, 4),
+            "nonce": secrets.token_urlsafe(8),
         }
     )
     return jsonify(
@@ -348,6 +376,20 @@ def api_commit():
             200,
         )
 
+    nonce = data.get("nonce")
+    if not isinstance(nonce, str) or not _consume_token(nonce, _confirm_max_age()):
+        # Already used, so this is a replay or a double submit. Nothing is
+        # recorded, and the caller is told plainly rather than being shown a
+        # second entry that does not exist.
+        return (
+            jsonify(
+                ok=False,
+                code="already_used",
+                message="That confirmation has already been used.",
+            ),
+            200,
+        )
+
     score = float(data.get("score") or 0.0)
     result = attendance.record_clock(
         employee,
@@ -355,10 +397,11 @@ def api_commit():
         confidence=score,
         method=METHOD_AUTO,
         device_label=current_app.config["KIOSK_DEVICE_LABEL"],
-        # A hands-free entry never overrides the interval, even though a
-        # direction is supplied: being seen by a camera states no intent. This
-        # also makes a replayed token harmless.
-        cooldown_seconds=current_app.config["AUTO_MIN_INTERVAL_SECONDS"],
+        # No cooldown: an automatic entry always records. Whoever is recognised
+        # is clocked to the opposite of their current state, full stop. Replay is
+        # handled by the token being single use, and one approach clocking twice
+        # is handled by the browser requiring a departure first.
+        cooldown_seconds=0,
         automatic=True,
     )
     return jsonify(**_result_payload(employee, result, score))

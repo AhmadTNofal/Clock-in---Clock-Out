@@ -146,13 +146,19 @@ def test_an_expired_token_asks_them_to_try_again(client, db, enrolled, app, monk
 
 
 def test_replaying_a_token_does_not_double_record(client, db, enrolled):
-    """Even a captured token is harmless: the interval suppresses the second."""
+    """A confirmation is single use.
+
+    This is what replaced the old minimum-interval rule. The interval blocked
+    replays but also blocked genuine clocking; consuming the token blocks only
+    the replay.
+    """
     token = _identify(client)["confirm_token"]
     first = _commit(client, token).get_json()
     second = _commit(client, token).get_json()
 
     assert first["recorded"] is True
-    assert second["recorded"] is False
+    assert second["ok"] is False
+    assert second["code"] == "already_used"
     assert db.session.query(AttendanceEvent).count() == 1
 
 
@@ -171,32 +177,26 @@ def test_identify_and_commit_need_the_kiosk_token(client, enrolled):
 # --------------------------------------------------------------------------
 # Walking past must not clock you out
 # --------------------------------------------------------------------------
-def test_walking_past_mid_shift_does_not_clock_you_out(client, db, enrolled, app):
-    """The headline safety property of hands-free clocking.
+def test_walking_past_mid_shift_now_offers_a_clock_out(client, db, enrolled):
+    """The kiosk no longer refuses on the grounds of having clocked recently.
 
-    Somebody clocked in five minutes ago crosses the camera's view again. The
-    naive behaviour - alternate the direction - would clock them out and lose
-    their whole shift. Instead the kiosk reports their state and offers no token.
+    This is a deliberate trade-off, chosen so the kiosk behaves as a plain
+    toggle. The consequence is that somebody who steps in front of the camera
+    mid-shift IS offered a clock-out, and the cancellable countdown is the only
+    thing standing between them and a wrong entry - see AUTO_CONFIRM_SECONDS.
+    The browser also requires them to have left the view first.
     """
-    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 600
     attendance.record_clock(
         enrolled,
         direction="in",
-        occurred_at=utcnow() - dt.timedelta(minutes=5),
+        occurred_at=utcnow() - dt.timedelta(seconds=5),
         cooldown_seconds=0,
     )
 
     payload = _identify(client)
-
-    assert payload["ok"] is True
-    assert payload["code"] == "already_clocked"
-    assert payload["pending"] is False
-    assert "confirm_token" not in payload
-    assert payload["direction"] == "in"
-    assert payload["seconds_until_next"] > 0
-    # Still exactly the one clock-in.
-    assert db.session.query(AttendanceEvent).count() == 1
-    assert attendance.is_clocked_in(enrolled.id)
+    assert payload["code"] == "pending"
+    assert payload["direction"] == "out"
+    assert "seconds_until_next" not in payload
 
 
 def test_identify_offers_a_clock_out_once_the_interval_has_passed(client, db, enrolled, app):
@@ -216,10 +216,9 @@ def test_identify_offers_a_clock_out_once_the_interval_has_passed(client, db, en
     assert not attendance.is_clocked_in(enrolled.id)
 
 
-def test_a_button_press_overrides_the_hands_free_interval(client, db, enrolled, app):
-    """Somebody who really is leaving straight away can still press Clock out."""
-    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 600
-    app.config["CLOCK_COOLDOWN_SECONDS"] = 90
+def test_the_buttons_still_work_alongside_hands_free(client, db, enrolled, app):
+    """Pressing Clock out records immediately, whatever the automatic path did."""
+    app.config["CLOCK_COOLDOWN_SECONDS"] = 0
     _commit(client, _identify(client)["confirm_token"])
     assert attendance.is_clocked_in(enrolled.id)
 
@@ -234,21 +233,18 @@ def test_a_button_press_overrides_the_hands_free_interval(client, db, enrolled, 
     assert not attendance.is_clocked_in(enrolled.id)
 
 
-def test_automatic_entries_never_override_the_interval_even_with_a_direction(db):
-    """Guards the rule directly: automatic=True ignores a stated direction."""
+def test_an_automatic_entry_records_without_a_cooldown(db):
+    """Passing cooldown_seconds=0 records regardless of how recent the last was."""
     employee = make_employee(db)
     attendance.record_clock(employee, direction="in", cooldown_seconds=0)
 
     result = attendance.record_clock(
-        employee, direction="out", cooldown_seconds=600, automatic=True
+        employee, direction="out", cooldown_seconds=0, automatic=True
     )
-    assert not result.recorded
-    assert db.session.query(AttendanceEvent).count() == 1
+    assert result.recorded
+    assert db.session.query(AttendanceEvent).count() == 2
 
 
-# --------------------------------------------------------------------------
-# Switching hands-free off
-# --------------------------------------------------------------------------
 def test_identify_is_refused_when_auto_mode_is_off(client, app, enrolled):
     app.config["KIOSK_AUTO_MODE"] = False
     response = client.post(
@@ -364,51 +360,26 @@ def test_camera_check_reports_the_new_thresholds(logged_in):
 # --------------------------------------------------------------------------
 # Toggle behaviour: in -> out, out -> in
 # --------------------------------------------------------------------------
-def test_default_interval_gives_toggle_behaviour(client, db, enrolled, app):
-    """Clocked in, so the next appearance must offer a clock-out.
-
-    With the interval at its 60s default the kiosk behaves as a switch. The
-    trade-off is documented in config.py: at 60s, crossing the camera's view
-    mid-shift does offer a clock-out, and the countdown is the guard.
-    """
-    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 60
-
+def test_clocked_in_is_offered_a_clock_out(client, db, enrolled):
     attendance.record_clock(
         enrolled,
         direction="in",
-        occurred_at=utcnow() - dt.timedelta(seconds=90),
+        occurred_at=utcnow() - dt.timedelta(seconds=30),
         cooldown_seconds=0,
     )
     assert attendance.is_clocked_in(enrolled.id)
 
     payload = _identify(client)
-    assert payload["code"] == "pending"
     assert payload["direction"] == "out"
-
     _commit(client, payload["confirm_token"])
     assert not attendance.is_clocked_in(enrolled.id)
 
 
-def test_toggle_runs_both_ways(client, db, enrolled, app):
-    """in -> out -> in, each appearance flipping the state."""
-    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 60
+def test_toggle_runs_both_ways(client, db, enrolled):
+    """in -> out -> in, each sighting flipping the state."""
     seen = []
-
-    def age_everything(seconds):
-        """Shift every entry back, preserving their order.
-
-        Ageing only the newest row would move it *behind* an older one and
-        scramble the sequence the alternation depends on.
-        """
-        for event in db.session.query(AttendanceEvent).all():
-            event.occurred_at = event.occurred_at - dt.timedelta(seconds=seconds)
-        db.session.commit()
-
-    for step in range(3):
-        if step:
-            age_everything(90)
+    for _ in range(3):
         payload = _identify(client)
-        assert payload["code"] == "pending", payload
         _commit(client, payload["confirm_token"])
         seen.append(payload["direction"])
 
@@ -416,21 +387,22 @@ def test_toggle_runs_both_ways(client, db, enrolled, app):
     assert attendance.is_clocked_in(enrolled.id)
 
 
-def test_lingering_still_cannot_double_punch(client, db, enrolled, app):
-    """Toggling must not mean a single approach clocks in then straight out."""
-    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 60
-    _commit(client, _identify(client)["confirm_token"])
+def test_the_server_no_longer_throttles_automatic_entries(client, db, enrolled):
+    """Two sightings in a row both record; the throttle is the browser's.
 
-    # Still standing there a moment later.
-    second = _identify(client)
-    assert second["code"] == "already_clocked"
-    assert "confirm_token" not in second
-    assert db.session.query(AttendanceEvent).count() == 1
+    The server deliberately has no opinion about how recently somebody clocked.
+    Preventing one approach from clocking twice is the browser's job - it waits
+    for the person to leave the camera's view - and is covered by
+    tests/js/kiosk_harness.js, which drives the real kiosk JavaScript.
+    """
+    first = _commit(client, _identify(client)["confirm_token"]).get_json()
+    second = _commit(client, _identify(client)["confirm_token"]).get_json()
+
+    assert first["recorded"] is True and first["direction"] == "in"
+    assert second["recorded"] is True and second["direction"] == "out"
+    assert db.session.query(AttendanceEvent).count() == 2
 
 
-# --------------------------------------------------------------------------
-# Speed and range settings
-# --------------------------------------------------------------------------
 def test_range_settings_are_self_consistent(app):
     """Invariants, not exact numbers - the numbers are tunable per site.
 
@@ -462,46 +434,55 @@ def test_speed_settings_are_sane(app):
 
 
 def test_shipped_env_example_matches_the_code_defaults():
-    """Guards against .env.example drifting from config.py.
+    """Guards against .env.example drifting from the defaults in config.py.
 
     Anybody installing this copies .env.example, so a stale value there silently
-    becomes the deployed behaviour - which is exactly how the tuned defaults got
+    becomes the deployed behaviour - which is exactly how tuned defaults got
     overridden during development.
+
+    The comparison is against the defaults written in config.py's source, not
+    against ``Config`` attributes: those resolve from whatever .env happens to be
+    on this machine, so comparing them only ever proved that .env and
+    .env.example agreed with each other.
     """
     import re
 
     from app.config import BASE_DIR
 
-    text = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
-    settings = dict(re.findall(r"^([A-Z_]+)=(.*)$", text, re.M))
-
-    from app.config import Config
-
-    for key in (
-        "FACE_MIN_PIXELS",
-        "FACE_DETECT_MAX_SIDE",
-        "CAPTURE_MAX_WIDTH",
-        "AUTO_SCAN_FRAMES",
-        "AUTO_FRAME_GAP_MS",
-        "AUTO_CONFIRM_SECONDS",
-        "AUTO_MIN_INTERVAL_SECONDS",
-        "AUTO_POLL_MS",
-        "AUTO_PRESENCE_MS",
-        "AUTO_DEPARTURE_MS",
-        "AUTO_REARM_SECONDS",
-    ):
-        assert key in settings, f"{key} is missing from .env.example"
-        if settings[key] == "":
-            continue
-        assert str(getattr(Config, key)) == settings[key], (
-            f"{key}: .env.example says {settings[key]!r} but config.py resolves to "
-            f"{getattr(Config, key)!r}"
+    source = (BASE_DIR / "app" / "config.py").read_text(encoding="utf-8")
+    defaults = {
+        name: value.strip()
+        for name, value in re.findall(
+            r'_(?:int|float|bool)\(\s*"([A-Z_]+)"\s*,\s*([^)]+)\)', source
         )
+    }
+    example = dict(
+        re.findall(
+            r"^([A-Z_]+)=(.*)$",
+            (BASE_DIR / ".env.example").read_text(encoding="utf-8"),
+            re.M,
+        )
+    )
+
+    checked = 0
+    for name, coded in defaults.items():
+        if name not in example or example[name] == "":
+            continue  # deliberately blank in the example, e.g. MYSQL_SSL_MODE
+        expected = coded.strip().strip('"').strip("'")
+        if expected in {"True", "False"}:
+            expected = expected.lower()
+        assert example[name] == expected, (
+            f"{name}: .env.example says {example[name]!r} but config.py defaults "
+            f"to {expected!r}"
+        )
+        checked += 1
+
+    assert checked > 15, f"only compared {checked} settings; the parse likely broke"
 
 
 def test_kiosk_page_carries_the_speed_and_range_settings(client):
     body = client.get("/").data.decode("utf-8")
-    for key in ("autoFrames", "frameGapMs", "minIntervalSeconds", "captureMaxWidth"):
+    for key in ("autoFrames", "frameGapMs", "captureMaxWidth"):
         assert key in body, f"{key} missing from the kiosk page"
 
 
@@ -532,32 +513,27 @@ def test_a_small_distant_face_is_accepted_at_the_new_floor():
 # --------------------------------------------------------------------------
 # Toggling is gated on absence, not on elapsed time
 # --------------------------------------------------------------------------
-def test_returning_after_the_short_interval_toggles(client, db, enrolled, app):
-    """Leave and come back: clocked in becomes clocked out.
+def test_every_sighting_toggles(client, db, enrolled):
+    """Clocked out -> clocked in -> clocked out, with nothing in between."""
+    seen = []
+    for _ in range(4):
+        payload = _identify(client)
+        assert payload["code"] == "pending", payload
+        assert payload["confirm_token"]
+        _commit(client, payload["confirm_token"])
+        seen.append(payload["direction"])
 
-    The server's interval is only a backstop now - the browser requires the
-    person to have left the camera's view. So this interval must stay short
-    enough that a genuine return is never blocked.
-    """
-    interval = app.config["AUTO_MIN_INTERVAL_SECONDS"]
-    assert interval <= 30, (
-        f"AUTO_MIN_INTERVAL_SECONDS is {interval}s; anything long blocks genuine "
-        "toggling, which is what departure gating exists to avoid"
-    )
-
-    _commit(client, _identify(client)["confirm_token"])
-    assert attendance.is_clocked_in(enrolled.id)
-
-    # They walked away and came back, just after the backstop interval.
-    last = attendance.last_event(enrolled.id)
-    last.occurred_at = utcnow() - dt.timedelta(seconds=interval + 1)
-    db.session.commit()
-
-    second = _identify(client)
-    assert second["code"] == "pending", second
-    assert second["direction"] == "out"
-    _commit(client, second["confirm_token"])
+    assert seen == ["in", "out", "in", "out"]
+    assert db.session.query(AttendanceEvent).count() == 4
     assert not attendance.is_clocked_in(enrolled.id)
+
+
+def test_no_reply_ever_says_already_clocked(client, db, enrolled):
+    """The refusal that used to exist must not come back."""
+    attendance.record_clock(enrolled, direction="in", cooldown_seconds=0)
+    payload = _identify(client)
+    assert payload["code"] != "already_clocked"
+    assert "already clocked" not in (payload.get("message") or "").lower()
 
 
 def test_departure_settings_reach_the_kiosk_page(client, app):
@@ -575,21 +551,34 @@ def test_departure_gating_is_on_by_default(app):
     )
 
 
-def test_rearm_fallback_is_configured(app):
-    """Departure gating alone fails closed if the camera never sees an empty scene.
+def test_there_is_always_a_way_to_rearm(app):
+    """The kiosk must never be able to get permanently stuck.
 
-    Reported symptom: the kiosk clocked once and then never again, with nothing
-    on screen to explain why. A camera that can always see somebody - one facing
-    a desk, or a doorway that is never clear - never satisfies the departure
-    check, so there must be a time-based way out.
+    Reported symptom: clocking worked on the way in and was unpredictable
+    afterwards. The cause was relying on one fragile signal - a global
+    grey-difference threshold - to decide somebody had left. There are now three
+    independent ways to re-arm, and at least one of the two reliable ones must be
+    enabled, whatever the .env says.
     """
-    rearm = app.config["AUTO_REARM_SECONDS"]
-    assert rearm > 0, (
-        "AUTO_REARM_SECONDS=0 relies on departure alone; if the camera never "
-        "reports an empty scene the kiosk stops clocking altogether"
+    ways = []
+    if app.config["AUTO_LATCHED_POLL_MS"] > 0:
+        ways.append("server reports no face")
+    if app.config["AUTO_REARM_SECONDS"] > 0:
+        ways.append("timeout")
+
+    assert ways, (
+        "Both AUTO_LATCHED_POLL_MS and AUTO_REARM_SECONDS are disabled, leaving "
+        "only the browser's presence check to notice somebody leaving. If that "
+        "check never reports an empty scene the kiosk stops clocking entirely."
     )
-    assert rearm >= app.config["AUTO_CONFIRM_SECONDS"] + 5, (
-        "the re-arm window must comfortably outlast the countdown"
+
+
+def test_presence_check_can_never_block_clocking_outright(app):
+    """A person the presence check cannot see must still be clocked eventually."""
+    assert app.config["AUTO_IDLE_POLL_MS"] > 0 or app.config["AUTO_PRESENCE_THRESHOLD"] <= 3.0, (
+        "With the idle safety poll disabled, anybody the grey-difference check "
+        "misses - dark clothing, awkward angle, threshold set too high - is never "
+        "recognised at all, with nothing on screen to explain why."
     )
 
 

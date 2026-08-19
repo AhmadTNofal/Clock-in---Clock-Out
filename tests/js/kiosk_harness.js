@@ -80,10 +80,19 @@ async function advanceUntil(label, cond, maxMs = 20000) {
 // --- fake network ----------------------------------------------------------
 const calls = [];
 let identifyReply = null;
+let faceOverride = null;   // null = follow the scene
 global.fetch = (url, opts) => {
   calls.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
   let payload = { ok: true, count: 0 };
-  if (url.includes("identify")) payload = identifyReply;
+  if (url.includes("identify")) {
+    /* The real detector only reports a face when somebody is actually in frame,
+     * so the stub must couple the two. Letting it claim a face over an empty
+     * scene made the idle safety poll look like a bug when it was working. */
+    var faceVisible = faceOverride === null ? scenePixel >= 50 : faceOverride;
+    payload = faceVisible
+      ? identifyReply
+      : { ok: false, code: "no_face", message: "No face was found." };
+  }
   else if (url.includes("commit")) {
     /* Echo back whatever the last identify offered, as the real server does.
      * Hardcoding a direction here once masked a genuine result: the screen
@@ -119,12 +128,19 @@ global.KIOSK_CONFIG = {
   frames: 3, autoMode: true, confirmSeconds: 2, pollMs: 600,
   presenceMs: 200, presenceThreshold: 7.0,
   autoFrames: 2, frameGapMs: 300, minIntervalSeconds: 10, captureMaxWidth: 960,
-  requireDeparture: true, departureMs: 900, rearmSeconds: 30,
+  requireDeparture: true, departureMs: 900, rearmSeconds: 30, debug: true,
+  latchedPollMs: 1500, idlePollMs: 4000,
 };
 eval(fs.readFileSync(path.join(APP, "capture.js"), "utf8"));
 eval(fs.readFileSync(path.join(APP, "kiosk.js"), "utf8"));
 
 const commits = () => calls.filter((c) => c.url.includes("commit")).length;
+/* Reaches into kiosk.js's diagnostics via the debug overlay text, which is the
+ * only place the re-arm reason is exposed. */
+function lastRearmReasonSeen() {
+  const m = /last re-arm: ([^\]]+)/.exec(els["kiosk-debug"].textContent || "");
+  return m ? m[1] : "?";
+}
 const identifies = () => calls.filter((c) => c.url.includes("identify")).length;
 const name = () => els["result-name"].textContent;
 const action = () => els["result-action"].innerHTML;
@@ -188,19 +204,24 @@ const pendingIn = {
         commits() === beforeCancel, `commits before=${beforeCancel} after=${commits()}`);
   check("Cancel hides the Cancel button", els["cancel-btn"].hidden === true);
 
-  // 5. already_clocked must never commit.
-  const beforeAlready = commits();
+  // 5. A second sighting after a departure simply clocks the other way. There
+  //    is no "already clocked" refusal any more - the kiosk is a plain toggle.
+  const beforeToggle = commits();
+  scenePixel = 0;
   await advance(12000);
   identifyReply = {
-    ok: true, code: "already_clocked", pending: false, direction: "in",
-    occurred_at: "07:31:02", message: "Already clocked in, Sam.",
+    ok: true, code: "pending", pending: true, confirm_token: "tok-toggle",
+    confirm_seconds: 2, direction: "out",
     employee: { id: 11, name: "Sam Fletcher", first_name: "Sam" },
   };
   scenePixel = 240;
-  await advanceUntil("already", () => action().includes("Already clocked in"), 8000);
-  check("already_clocked never commits", commits() === beforeAlready, `commits=${commits()}`);
-  check("already_clocked is reported to the user",
-        action().includes("Already clocked in"), `action="${action()}"`);
+  const toggled = await advanceUntil(
+    "toggle", () => commits() === beforeToggle + 1, 15000);
+  check("a later sighting toggles rather than refusing", toggled,
+        `commits=${commits()} (was ${beforeToggle})`);
+  check("no 'already clocked' wording appears anywhere",
+        !/already clocked/i.test(action() + " " + els["kiosk-hint"].textContent),
+        `action="${action()}"`);
 
   // 6. An unrecognised face must stay silent (no screen churn, no commit).
   scenePixel = 0;
@@ -293,6 +314,59 @@ const pendingIn = {
         /ready again in/i.test(els["kiosk-hint"].textContent) ||
           action().includes("Clocked"),
         `hint="${els["kiosk-hint"].textContent}"`);
+
+  // 10. The reported unpredictability: the grey-difference presence check is one
+  //     fragile threshold, and when it never reports an empty scene the kiosk
+  //     used to stay latched. The face detector is the reliable authority, so a
+  //     "no face" answer must re-arm even while presence insists somebody is there.
+  scenePixel = 0; faceOverride = null;
+  await advance(20000);
+  calls.length = 0;
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-1",
+    confirm_seconds: 2, direction: "in",
+    employee: { id: 91, name: "Elin Vaughan", first_name: "Elin" },
+  };
+  scenePixel = 210;
+  await advanceUntil("in", () => commits() === 1, 12000);
+  check("clocked in (fragile-presence scenario)", commits() === 1);
+
+  /* She has left, but the presence check still reads "somebody there" - a
+   * doorway that never clears, or a threshold set too low. Only the server can
+   * tell us the truth. */
+  faceOverride = false;
+  const rearmedByServer = await advanceUntil(
+    "server rearm", () => lastRearmReasonSeen() === "no face", 15000);
+  check("RE-ARMS ON THE SERVER SEEING NO FACE, EVEN IF PRESENCE DISAGREES",
+        rearmedByServer, `reason=${lastRearmReasonSeen()}`);
+
+  // 11. And the reverse: presence says empty but somebody really is standing
+  //     there (dark clothing, awkward angle). The slow safety poll must find them.
+  scenePixel = 0;            // presence: empty
+  faceOverride = true;       // but a face really is in front of the camera
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-2",
+    confirm_seconds: 2, direction: "out",
+    employee: { id: 91, name: "Elin Vaughan", first_name: "Elin" },
+  };
+  const foundAnyway = await advanceUntil("idle poll", () => commits() === 2, 20000);
+  check("IDLE POLL CLOCKS SOMEBODY THE PRESENCE CHECK CANNOT SEE",
+        foundAnyway && commits() === 2, `commits=${commits()}`);
+
+  // 12. A queue at shift change: the scene never empties between two people, so
+  //     the second must still be able to clock.
+  faceOverride = true; scenePixel = 210;
+  await advance(12000);
+  const beforeQueue = commits();
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-3",
+    confirm_seconds: 2, direction: "in",
+    employee: { id: 92, name: "Dafydd Lloyd", first_name: "Dafydd" },
+  };
+  const served = await advanceUntil(
+    "queue", () => commits() === beforeQueue + 1, 20000);
+  check("THE NEXT PERSON IN A QUEUE IS SERVED WITHOUT THE SCENE EMPTYING",
+        served, `commits=${commits()} (was ${beforeQueue})`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

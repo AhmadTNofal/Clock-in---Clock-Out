@@ -86,7 +86,10 @@ class Config:
     LIVENESS_MIN_MOTION = _float("LIVENESS_MIN_MOTION", 1.6)
 
     # --- Attendance rules -------------------------------------------------
-    CLOCK_COOLDOWN_SECONDS = _int("CLOCK_COOLDOWN_SECONDS", 90)
+    # Button presses only: guards against an accidental double-tap on Scan.
+    # Short, because the buttons should otherwise toggle as readily as the
+    # automatic path does. Hands-free entries ignore this entirely.
+    CLOCK_COOLDOWN_SECONDS = _int("CLOCK_COOLDOWN_SECONDS", 5)
     TIMEZONE = os.getenv("TIMEZONE", "Europe/London")
 
     # --- Kiosk ------------------------------------------------------------
@@ -100,19 +103,14 @@ class Config:
     # committed, giving somebody who only walked past a chance to cancel.
     # 0 commits immediately.
     AUTO_CONFIRM_SECONDS = _int("AUTO_CONFIRM_SECONDS", 2)
-    # What stops the kiosk clocking somebody twice is *absence*, not elapsed
-    # time: after an automatic entry it waits until the person has walked away
-    # before it will clock them again. That is what makes it behave like a
-    # toggle - arrive and you are clocked in, come back later and you are
-    # clocked out - without a stationary person being clocked over and over.
-    # See AUTO_REQUIRE_DEPARTURE below.
+    # What stops the kiosk clocking somebody twice is *absence*: after an entry
+    # it waits until the person has walked away before clocking them again. That
+    # is the only throttle, deliberately - see AUTO_REQUIRE_DEPARTURE.
     #
-    # This interval is only a backstop for the case where the browser's
-    # departure check cannot be trusted: a reloaded page, a second kiosk, or a
-    # camera that cannot tell an empty doorway from an occupied one. Keep it
-    # short, or it starts blocking genuine toggling; it must be shorter than the
-    # time somebody would realistically take to leave and return.
-    AUTO_MIN_INTERVAL_SECONDS = _int("AUTO_MIN_INTERVAL_SECONDS", 10)
+    # There is no minimum interval between entries. Whoever is recognised is
+    # clocked to the opposite of their current state, and nothing is refused for
+    # having clocked recently. A confirmation token is single use, which handles
+    # replays without also blocking genuine clocking.
     # Require the scene to read empty again before offering the same person
     # another automatic entry. Switching this off falls back to the interval
     # above being the only guard, which on a busy doorway means somebody
@@ -136,6 +134,28 @@ class Config:
     # countdown is a real chance to cancel. Set 0 to disable the fallback and
     # rely on departure alone.
     AUTO_REARM_SECONDS = _int("AUTO_REARM_SECONDS", 30)
+    # While latched, ask the server every so often whether anybody is still in
+    # front of the camera.
+    #
+    # The browser's grey-difference presence check is a crude signal: one global
+    # threshold against a reference image. It copes well with somebody walking in
+    # (a large change) and badly with the marginal cases - a person in dark
+    # clothing, a doorway that never fully clears, a queue at shift change where
+    # the scene is never empty between two people. Relying on it alone is what
+    # made clocking work on the way in but behave unpredictably afterwards.
+    #
+    # The face detector, by contrast, knows for certain whether a face is there
+    # and whose it is. So it becomes the authority: the kiosk re-arms as soon as
+    # the server reports no face, or reports somebody different. Costs one small
+    # request every AUTO_LATCHED_POLL_MS while latched, and nothing at all once
+    # the scene is quiet.
+    AUTO_LATCHED_POLL_MS = _int("AUTO_LATCHED_POLL_MS", 1500)
+    # Slow safety poll for when the presence check says "empty" but somebody is
+    # actually standing there - low contrast, an odd camera angle, a threshold
+    # set too high. Without it, a person the presence check cannot see is never
+    # clocked at all and there is nothing on screen to say why. Set 0 to disable
+    # and trust the presence check completely.
+    AUTO_IDLE_POLL_MS = _int("AUTO_IDLE_POLL_MS", 4000)
     # How often the kiosk runs recognition once it thinks somebody is there.
     AUTO_POLL_MS = _int("AUTO_POLL_MS", 600)
     # How often it checks whether anybody has arrived (browser-side, cheap).

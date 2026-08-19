@@ -9,7 +9,16 @@ the network, then drives the real ``kiosk.js`` with fake timers and asserts that
 * nothing is committed while the countdown is running;
 * letting the countdown finish commits exactly once;
 * **Cancel prevents the commit**;
-* an already-clocked or unrecognised person never commits.
+* an already-clocked or unrecognised person never commits;
+* a person who never leaves the frame still clocks again;
+* the kiosk re-arms when the *server* reports no face, even if the browser's
+  presence check insists somebody is there;
+* somebody the presence check cannot see is still clocked by the idle poll;
+* the next person in a queue is served without the scene emptying.
+
+There is also ``tests/js/presence_test.js``, which drives the presence detector
+through awkward departures (lingering at the edge of view, lighting drift, a brief
+pass-through) to check its background model does not learn a person as scenery.
 
 This caught a real bug: the recognition poll timer was not stopped when a
 countdown began, so once the screen returned to idle the stale poll kept calling
@@ -57,3 +66,15 @@ def test_browser_scripts_parse(script):
         [NODE, "--check", str(path)], capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+@needs_node
+def test_presence_detector():
+    """The background model must not learn a lingering person as empty scenery."""
+    harness = HARNESS.parent / "presence_test.js"
+    result = subprocess.run(
+        [NODE, str(harness)], capture_output=True, text=True, timeout=120
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, f"presence detector harness failed:\n{output}"
+    assert "FAIL" not in output, output

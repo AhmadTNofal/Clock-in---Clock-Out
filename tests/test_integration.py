@@ -262,12 +262,23 @@ def test_hands_free_identify_then_commit_with_real_models(logged_in, db, app, fi
     assert event.direction == "in"
     assert event.method == "auto"
 
-    # Standing there a moment longer must not clock them out again.
+    # A further sighting toggles them straight back out: the server has no
+    # opinion about how recently somebody clocked. Preventing one approach from
+    # clocking twice is the browser's job (it waits for a departure), covered by
+    # tests/js/kiosk_harness.js.
     again = client.post(
         "/api/kiosk/identify", json={"frames": frames}, headers={"X-Kiosk-Token": TOKEN}
     ).get_json()
-    assert again["code"] == "already_clocked"
-    assert db.session.query(AttendanceEvent).count() == 1
+    assert again["code"] == "pending"
+    assert again["direction"] == "out"
+
+    client.post(
+        "/api/kiosk/commit",
+        json={"confirm_token": again["confirm_token"]},
+        headers={"X-Kiosk-Token": TOKEN},
+    )
+    assert [e.direction for e in db.session.query(AttendanceEvent).order_by(
+        AttendanceEvent.id)] == ["in", "out"]
 
 
 @needs_models

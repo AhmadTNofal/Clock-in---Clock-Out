@@ -65,13 +65,17 @@
     var awaitingDeparture = false;
     var absentSince = 0;
     var latchedAt = 0;
+    var latchedPollTimer = null;
+    var idlePollTimer = null;
+    var noFaceRuns = 0;
+    var lastMotion = null;
 
     var RESULT_SECONDS = 6;
-    /* Kept in step with the server's interval so the kiosk never starts a
-     * countdown the server would then refuse, which would read as it changing
-     * its mind. With departure gating doing the real work this is only a
-     * backstop, so it is short. */
-    var REPEAT_SUPPRESS_MS = (config.minIntervalSeconds || 10) * 1000;
+    /* There is no minimum interval any more: whoever is recognised is clocked to
+     * the opposite of their current state. Requiring a departure first is the
+     * only throttle, so this is just a guard against two polls in flight around
+     * the same sighting. */
+    var REPEAT_SUPPRESS_MS = 2000;
     /* Hands-free capture is deliberately leaner than a button press: two frames
      * instead of three. Capture time dominates how long somebody waits for their
      * name to appear, far more than the recognition itself does. */
@@ -84,6 +88,12 @@
      * departure gating fails closed: clocks once, then nothing, with no
      * explanation. 0 disables the fallback. */
     var REARM_MS = (config.rearmSeconds === 0 ? 0 : (config.rearmSeconds || 30)) * 1000;
+    var LATCHED_POLL_MS = config.latchedPollMs || 1500;
+    var IDLE_POLL_MS = config.idlePollMs === 0 ? 0 : (config.idlePollMs || 4000);
+    /* Consecutive "no face" answers from the server needed to call it a
+     * departure. Two, so a single blurred frame as somebody turns away does not
+     * count as them having left. */
+    var NO_FACE_TO_REARM = 2;
 
     var missStreak = 0;
     var MISS_HINT_AFTER = 3;
@@ -138,7 +148,10 @@
                 (lastScore >= config.presenceThreshold ? "SOMEBODY THERE" : "empty") +
                 ")",
             "clocking     " + latch + "  [last re-arm: " + lastRearmReason + "]",
-            "last reply   " + lastCode,
+            "last reply   " +
+                lastCode +
+                (lastMotion === null ? "" : "   (motion " + lastMotion + ")"),
+            "no-face runs " + noFaceRuns + " / " + NO_FACE_TO_REARM,
             "misses       " + missStreak,
             "busy         " + busy
         ].join("\n");
@@ -198,6 +211,8 @@
             awaitingDeparture = true;
             absentSince = 0;
             latchedAt = Date.now();
+            noFaceRuns = 0;
+            startLatchedWatch();
         }
         /* Stop polling for a face while the result is on screen. Leaving this
          * timer running was a bug: once the screen returned to idle the stale
@@ -288,6 +303,12 @@
             if (data.code === "rate_limited") {
                 backoffUntil = Date.now() + 15000;
             }
+            if (data.code === "already_used") {
+                /* A double submit of one confirmation. Nothing was recorded twice;
+                 * there is nothing useful to show, so go quiet. */
+                showIdle();
+                return;
+            }
             setResult("error", "Not recorded", data.message || "Please try again", "", "");
             showResultFor(6);
             return;
@@ -321,11 +342,6 @@
         if (Date.now() < backoffUntil) {
             return;
         }
-        /* Belt and braces: never run recognition at an empty doorway, whatever
-         * state the timers have got themselves into. */
-        if (!presence.isPresent()) {
-            return;
-        }
         busy = true;
 
         capture
@@ -345,6 +361,9 @@
                     return;
                 }
                 lastCode = data.code || (data.ok ? "ok" : "?");
+                if (typeof data.motion === "number") {
+                    lastMotion = data.motion;
+                }
                 if (!data.ok) {
                     if (data.code === "rate_limited") {
                         /* Stop hammering; the kiosk is polling too fast. */
@@ -364,22 +383,6 @@
                     return;
                 }
                 missStreak = 0;
-
-                if (data.code === "already_clocked") {
-                    /* Only tell them if they are actually standing there, not
-                     * every time they cross the camera's view. */
-                    setResult(
-                        "warning",
-                        data.employee.name,
-                        data.message,
-                        data.occurred_at,
-                        "Use the buttons if you need to clock again."
-                    );
-                    lastPersonId = data.employee.id;
-                    lastPersonAt = Date.now();
-                    showResultFor(4);
-                    return;
-                }
 
                 if (data.code === "pending" && data.confirm_token) {
                     if (
@@ -478,6 +481,12 @@
             return;
         }
         var name = pending && pending.employee ? pending.employee.first_name : "";
+        /* Remember who was cancelled. Without this they count as "somebody new"
+         * to the latched watcher, which re-arms and clocks them anyway. */
+        if (pending && pending.employee) {
+            lastPersonId = pending.employee.id;
+            lastPersonAt = Date.now();
+        }
         abandonPending();
         setResult("", "Cancelled", name ? "Nothing recorded, " + name + "." : "Nothing recorded.", "", "");
         /* Suppress this person briefly so the countdown does not restart at once. */
@@ -550,6 +559,107 @@
         awaitingDeparture = false;
         lastPersonId = null;
         lastRearmReason = why;
+        noFaceRuns = 0;
+        stopLatchedWatch();
+    }
+
+    /* While latched, let the server answer "is anybody still there?".
+     *
+     * The face detector is a far better judge of that than a grey-level
+     * difference, so it is the authority for deciding somebody has left. The
+     * presence check remains as a fast path and the timer as a backstop: any of
+     * the three re-arming is enough, which is what stops a single unreliable
+     * signal wedging the kiosk. */
+    function startLatchedWatch() {
+        if (latchedPollTimer || LATCHED_POLL_MS <= 0) {
+            return;
+        }
+        latchedPollTimer = window.setInterval(watchWhileLatched, LATCHED_POLL_MS);
+    }
+
+    function stopLatchedWatch() {
+        if (latchedPollTimer) {
+            window.clearInterval(latchedPollTimer);
+            latchedPollTimer = null;
+        }
+    }
+
+    function watchWhileLatched() {
+        if (!awaitingDeparture || busy || Date.now() < backoffUntil) {
+            return;
+        }
+        /* One frame is enough: this asks "who is there", not "is this a live
+         * face", and a single frame skips the liveness comparison entirely. */
+        var frame = capture.grab();
+        if (!frame) {
+            return;
+        }
+        busy = true;
+        window
+            .postJson(config.identifyUrl, { frames: [frame] },
+                { "X-Kiosk-Token": config.token })
+            .then(function (data) {
+                lastCode = (data && data.code) || "?";
+                if (!data) {
+                    return;
+                }
+                if (data.code === "rate_limited") {
+                    backoffUntil = Date.now() + 15000;
+                    return;
+                }
+                if (data.code === "no_face") {
+                    noFaceRuns += 1;
+                    if (noFaceRuns >= NO_FACE_TO_REARM) {
+                        rearm("no face");
+                    }
+                    return;
+                }
+                noFaceRuns = 0;
+                /* Somebody else has stepped up - at a shift change the scene
+                 * never goes empty between two people, so waiting for that would
+                 * leave the second person unable to clock.
+                 *
+                 * Only usable when we know who the last person was: without that,
+                 * everybody looks new, and a cancelled entry would be re-offered
+                 * immediately - silently undoing the Cancel. */
+                if (lastPersonId !== null && data.employee && data.employee.id !== lastPersonId) {
+                    rearm("different person");
+                }
+            })
+            .catch(function () {})
+            .then(function () {
+                busy = false;
+            });
+    }
+
+    /* Slow safety poll, independent of the presence check.
+     *
+     * The grey-difference check can miss somebody standing still in dark
+     * clothing, or at an awkward angle, or if the threshold is set too high for
+     * the room. Previously that meant they were never clocked and nothing on
+     * screen said why. This asks the server directly every few seconds, so the
+     * presence check only ever makes clocking *faster*, never impossible. */
+    function startIdlePoll() {
+        if (idlePollTimer || IDLE_POLL_MS <= 0) {
+            return;
+        }
+        idlePollTimer = window.setInterval(function () {
+            if (
+                busy ||
+                awaitingDeparture ||
+                state === STATE.CONFIRMING ||
+                state === STATE.RESULT ||
+                Date.now() < backoffUntil
+            ) {
+                return;
+            }
+            /* Only needed when presence thinks the scene is empty; if it can see
+             * somebody, the normal fast path is already running. */
+            if (lastScore >= config.presenceThreshold) {
+                return;
+            }
+            lookForFace();
+        }, IDLE_POLL_MS);
     }
 
     function stopLooking() {
@@ -608,6 +718,7 @@
                 window.setTimeout(function () {
                     presence.reset();
                     presenceTimer = window.setInterval(watchForArrivals, config.presenceMs);
+                    startIdlePoll();
                 }, 1200);
             } else {
                 modeEl.textContent = "Press to scan";

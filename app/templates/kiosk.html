@@ -73,11 +73,12 @@
         presenceThreshold: {{ auto_presence_threshold | tojson }},
         autoFrames: {{ auto_scan_frames | tojson }},
         frameGapMs: {{ auto_frame_gap_ms | tojson }},
-        minIntervalSeconds: {{ auto_min_interval_seconds | tojson }},
         captureMaxWidth: {{ capture_max_width | tojson }},
         requireDeparture: {{ auto_require_departure | tojson }},
         departureMs: {{ auto_departure_ms | tojson }},
         rearmSeconds: {{ auto_rearm_seconds | tojson }},
+        latchedPollMs: {{ auto_latched_poll_ms | tojson }},
+        idlePollMs: {{ auto_idle_poll_ms | tojson }},
         debug: {{ (request.args.get('debug') == '1') | tojson }}
     };
 </script>

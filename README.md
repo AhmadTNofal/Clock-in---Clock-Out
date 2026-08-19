@@ -19,8 +19,6 @@ no GPU, and nothing to install beyond `pip install -r requirements.txt`.
 - Automatic direction: a scan records the opposite of your last entry, so nobody
   has to remember which button to press. Explicit **Clock in** / **Clock out**
   buttons are there when needed, and override the hands-free interval.
-- Repeat scans inside a cooldown window say "already clocked in" instead of
-  writing a second row.
 - Shows a count of who is on site.
 - Space or Enter also triggers a scan, so a cheap USB footswitch wired as a
   keyboard works as the trigger. Escape cancels a pending automatic entry.
@@ -165,10 +163,13 @@ somebody arrives          recognised                countdown ends
 Clocked in? The next time the kiosk sees you, it clocks you out. Clocked out? It
 clocks you in. Nothing to press, no direction to choose.
 
-What stops it clocking you over and over is **absence, not elapsed time**: after
-an entry, the kiosk waits until you have walked out of the camera's view before it
-will clock you again. That is the whole rule, and it matches what people expect
-from a switch:
+Nothing is ever refused for having clocked recently — there is no minimum interval
+and no "already clocked in" message. Whoever is recognised is clocked to the
+opposite of their current state, full stop.
+
+What stops it clocking you over and over is **absence**: after an entry, the kiosk
+waits until you have walked out of the camera's view before it will clock you
+again. That is the only throttle, and it matches what people expect from a switch:
 
 ```
         arrive  ─────────────▶  clocked IN
@@ -185,17 +186,57 @@ Gating on time cannot do this. A long interval blocks you from genuinely clockin
 out; a short one clocks a stationary person in and straight back out again while
 they read the screen. Absence has neither problem.
 
+Replayed or double-submitted confirmations are handled separately, by making each
+confirmation token **single use**. That was previously the minimum interval's job,
+and it was the wrong tool: it blocked genuine clocking as well as replays.
+
 Two settings control it:
 
 - `AUTO_REQUIRE_DEPARTURE` (default `true`) — the rule above.
 - `AUTO_DEPARTURE_MS` (default 900) — how long the scene must read empty to count
   as having left. Long enough to ignore somebody shifting their weight.
 
-`AUTO_MIN_INTERVAL_SECONDS` is now only a **backstop** (default 10 s) for cases
-where the browser's departure check cannot be trusted — a reloaded page, a second
-kiosk, or a camera that cannot distinguish an empty doorway. Keep it short: a long
-value goes back to blocking genuine clocking out. The test suite fails if it is
-set above 30 s.
+Because the departure check is now the *only* throttle, it matters that it cannot
+get stuck — hence the three independent re-arm signals below. Do not set
+`AUTO_REQUIRE_DEPARTURE=false` while hands-free is on: with no throttle at all,
+somebody standing in front of the camera would be clocked every few seconds.
+
+#### Three ways to re-arm, because one is not enough
+
+The browser's presence check is a crude signal: one global threshold against a
+reference image of the empty scene. It handles somebody walking in well — a large,
+obvious change — and handles the marginal cases badly:
+
+- a person in dark clothing against a dark background;
+- a doorway that never fully clears;
+- a queue at shift change, where the scene is never empty between two people;
+- a threshold set slightly too high or too low for the room.
+
+Relying on it alone is what made clocking work reliably on the way in and behave
+unpredictably afterwards. The face detector, by contrast, knows for certain
+whether a face is in front of the camera and whose it is. So the kiosk now re-arms
+on **any** of three signals:
+
+| Signal | Setting | Speed | Reliability |
+|---|---|---|---|
+| Presence check reports an empty scene | `AUTO_DEPARTURE_MS` | fastest (~1 s) | fragile |
+| **Server reports no face** (or a different person) | `AUTO_LATCHED_POLL_MS` | ~3 s | reliable |
+| Timeout | `AUTO_REARM_SECONDS` | slowest | always works |
+
+Any one of them is enough, so no single unreliable signal can wedge the kiosk. The
+test suite fails if the two reliable ones are both switched off.
+
+The "different person" case matters in its own right: at a shift change the scene
+never goes empty between two people, so waiting for that would leave the second
+person in the queue unable to clock.
+
+#### And the reverse: somebody the presence check cannot see
+
+If the presence check says "empty" while somebody really is standing there, the
+fast path never starts. `AUTO_IDLE_POLL_MS` (default 4000) is a slow poll that
+asks the server directly every few seconds regardless, so the presence check can
+only ever make clocking *faster*, never impossible. Set it to `0` to trust the
+presence check completely.
 
 #### If the camera never sees an empty scene
 
@@ -235,8 +276,7 @@ stops it. That is the price of the kiosk behaving like a switch.
 This is a question of siting more than settings. A kiosk in a doorway people stop
 at is fine; one in a corridor people walk through is not, because they will be
 clocked in passing. If you cannot avoid that, lengthen `AUTO_CONFIRM_SECONDS` so
-there is more time to cancel, raise `AUTO_MIN_INTERVAL_SECONDS`, or set
-`KIOSK_AUTO_MODE=false` and use the buttons.
+there is more time to cancel, or set `KIOSK_AUTO_MODE=false` and use the buttons.
 
 Check the timesheet report for a week after go-live: unexpectedly short shifts, or
 rows flagged "No clock-out recorded", are the symptom of accidental clocking.
@@ -366,14 +406,15 @@ anything.
 | `FACE_MIN_PIXELS` | `55` | Minimum detected face width — the main control on how far away recognition works. Measured floor is ~47px; below ~45 accuracy falls away. |
 | `FACE_MIN_SHARPNESS` | `45.0` | Blur gate, measured on the aligned crop. Set to roughly half of a good reading from Camera check. |
 | `SCAN_FRAMES` / `SCAN_MIN_AGREE` | `3` / `2` | Frames captured per scan, and how many must name the same person. Requiring agreement stops one unlucky frame writing the wrong name into the log. |
-| `CLOCK_COOLDOWN_SECONDS` | `90` | Repeat scans in the same direction inside this window are reported, not recorded again. |
+| `CLOCK_COOLDOWN_SECONDS` | `5` | Button presses only: guards an accidental double-tap on Scan. Hands-free entries ignore it. |
 | `LIVENESS_REQUIRE_MOTION` | `true` | See the honest assessment below. |
 | `KIOSK_AUTO_MODE` | `true` | Hands-free clocking. `false` reverts to press-to-scan. |
 | `AUTO_CONFIRM_SECONDS` | `2` | Cancellable countdown before an automatic entry is written. `0` records instantly (not advised — it removes the only guard against being clocked out in passing). |
 | `AUTO_REQUIRE_DEPARTURE` | `true` | Require the person to leave the camera's view before they can be clocked again. This is what makes the kiosk a toggle. |
 | `AUTO_DEPARTURE_MS` | `900` | How long the scene must read empty to count as having left. |
 | `AUTO_REARM_SECONDS` | `30` | Re-arm after this long even if the scene never reads empty. Stops the kiosk getting permanently stuck when the camera can always see somebody. `0` disables it. |
-| `AUTO_MIN_INTERVAL_SECONDS` | `10` | Backstop only, for when the departure check cannot be trusted. Keep it short — a long value blocks genuine clocking out. |
+| `AUTO_LATCHED_POLL_MS` | `1500` | How often to ask the server "is anybody still there?" while latched. The reliable re-arm signal. `0` disables it. |
+| `AUTO_IDLE_POLL_MS` | `4000` | Slow poll so somebody the presence check cannot see is still clocked. `0` disables it. |
 | `AUTO_PRESENCE_THRESHOLD` | `7.0` | How much the scene must change to count as somebody arriving. Raise if it wakes at shadows. |
 | `FACE_DOMINANT_RATIO` | `1.35` | How much nearer the kiosk user must be than a bystander behind them. |
 | `CAPTURE_MAX_WIDTH` | `960` | Width the browser downscales to before upload. The binding constraint on range — the server cannot recover detail discarded here. |
@@ -394,12 +435,20 @@ those are normally worn.
 scan and requires that something about the face changed. A live face is never
 perfectly still; a photo held up to the camera produces near-identical crops.
 
-**It stops:** a still photo on paper or a phone screen, and a frozen or stalled
-camera feed.
+**It stops:** a frozen or stalled camera feed, and a photograph held perfectly
+still in front of a clean sensor.
 
-**It does not stop:** a video of the employee played back on a screen, a
-convincing mask, or a determined attacker. It is a deterrent, not certified
-anti-spoofing.
+**It does not stop:** a video played back on a screen, a mask, or — measured, not
+assumed — **a photograph held in the hand**. Because alignment removes translation,
+the frame-to-frame difference for a *settled live face* is dominated by sensor
+noise: measured at 2.8–5.2 grey levels against a 1.6 threshold. A hand-held photo
+produces the same noise, so it passes too. The check reliably catches only an
+input that is *identical* frame to frame.
+
+Treat it as a deterrent against the laziest attack, and nothing more. If your risk
+assessment needs better, the honest options are a supervised kiosk, a second factor
+(a payroll PIN alongside the face), or a camera with real depth or infra-red
+liveness hardware.
 
 For a kiosk inside a workshop, in sight of a supervisor, that is usually the
 right trade-off. If your risk assessment says otherwise, the honest options are
@@ -444,8 +493,8 @@ deactivating an employee drops them from the recognition index.
 python -m pytest
 ```
 
-143 tests, no MySQL needed — the suite runs against SQLite in memory. With face
-photos added (see below) that becomes 151.
+146 tests, no MySQL needed — the suite runs against SQLite in memory. With face
+photos added (see below) that becomes 154.
 
 ### The kiosk JavaScript
 
@@ -587,13 +636,15 @@ mysqldump -u clocking -p clocking > clocking-backup.sql
 | Symptom | Cause and fix |
 |---|---|
 | "Camera unavailable" on the kiosk | Not a secure origin. Use `localhost` or put HTTPS in front — see above. |
-| Kiosk clocks people out as they walk past | Raise `AUTO_MIN_INTERVAL_SECONDS`, or move the camera so it only sees people who stop at it. |
+| Kiosk clocks people out as they walk past | Lengthen `AUTO_CONFIRM_SECONDS` so there is more time to cancel, or move the camera so it only sees people who stop at it. |
 | Kiosk keeps waking with nobody there | Raise `AUTO_PRESENCE_THRESHOLD`. |
 | Hands-free never triggers | Lower `AUTO_PRESENCE_THRESHOLD`; check the mode badge says "Automatic"; check **Camera check** sees a face. |
 | Not picked up until you are close | Raise `CAPTURE_MAX_WIDTH` and `FACE_DETECT_MAX_SIDE` to 1280, then lower `FACE_MIN_PIXELS` towards 45. Check the camera is better than 720p. |
 | Live people rejected as photographs | The liveness gap is too short or the camera too noisy. Raise `AUTO_FRAME_GAP_MS`, or lower `LIVENESS_MIN_MOTION` (weakens photo protection). |
 | Clocked in but wanted to stay in | Press **Cancel** during the countdown. |
+| It clocked me twice | Check `AUTO_REQUIRE_DEPARTURE` is `true`. Departure is the only throttle; with it off, anybody in view is clocked repeatedly. |
 | Screen says "step away from the camera" | Working as intended — you have been clocked, and it will not clock you again until you have left the view. |
+| Works walking in, unpredictable afterwards | The presence check is missing the departure. The server-side check (`AUTO_LATCHED_POLL_MS`) now covers this; confirm with `?debug=1` that "last re-arm" changes after somebody leaves. |
 | Clocks once, then never again | The camera can always see somebody, so the departure check never clears. It now frees itself after `AUTO_REARM_SECONDS`; open the kiosk with `?debug=1` to watch the presence score and latch state live. Move the camera so it sees an empty scene, or raise `AUTO_PRESENCE_THRESHOLD`. |
 | Will not clock me out when I come back | The kiosk has not seen the doorway empty. Check **Camera check**: the presence score must drop below the threshold when nobody is there. Lower `AUTO_DEPARTURE_MS` or raise `AUTO_PRESENCE_THRESHOLD`. |
 | "Face recognition is not set up on this server" | Run `python scripts/fetch_models.py`. |
