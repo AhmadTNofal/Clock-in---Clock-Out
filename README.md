@@ -160,26 +160,117 @@ somebody arrives          recognised                countdown ends
                        nothing recorded
 ```
 
+### It works as a toggle
+
+Clocked in? The next time the kiosk sees you, it clocks you out. Clocked out? It
+clocks you in. Nothing to press, no direction to choose.
+
+What stops it clocking you over and over is **absence, not elapsed time**: after
+an entry, the kiosk waits until you have walked out of the camera's view before it
+will clock you again. That is the whole rule, and it matches what people expect
+from a switch:
+
+```
+        arrive  ─────────────▶  clocked IN
+                                     │
+        stand there  ──────────▶  nothing happens
+        (screen: "All set — step away from the camera")
+                                     │
+        walk away  ────────────▶  kiosk re-arms (scene reads empty ~1s)
+                                     │
+        come back  ────────────▶  clocked OUT
+```
+
+Gating on time cannot do this. A long interval blocks you from genuinely clocking
+out; a short one clocks a stationary person in and straight back out again while
+they read the screen. Absence has neither problem.
+
+Two settings control it:
+
+- `AUTO_REQUIRE_DEPARTURE` (default `true`) — the rule above.
+- `AUTO_DEPARTURE_MS` (default 900) — how long the scene must read empty to count
+  as having left. Long enough to ignore somebody shifting their weight.
+
+`AUTO_MIN_INTERVAL_SECONDS` is now only a **backstop** (default 10 s) for cases
+where the browser's departure check cannot be trusted — a reloaded page, a second
+kiosk, or a camera that cannot distinguish an empty doorway. Keep it short: a long
+value goes back to blocking genuine clocking out. The test suite fails if it is
+set above 30 s.
+
 ### Why there is a countdown
 
-The obvious design — recognise a face, write the row — has a nasty failure mode.
-Walk past the kiosk two hours into your shift and it would clock you *out*,
-quietly losing the rest of your day's pay. Three things prevent that:
+The obvious design — recognise a face, write the row immediately — has a nasty
+failure mode. Walk past the kiosk mid-shift and it clocks you *out*, quietly
+losing the rest of your day's pay. Two things stand between that and a wrong
+entry:
 
-1. **Nothing is written until the countdown finishes.** Recognition and
-   recording are separate steps (`/identify` then `/commit`). Walking away, or
-   pressing **Cancel** or Escape, means no entry ever existed — there is nothing
-   to undo and nothing for the office to correct.
-2. **`AUTO_MIN_INTERVAL_SECONDS`** (default 10 minutes) is the minimum gap
-   between two *automatic* entries for one person. Inside that window the screen
-   says "Already clocked in, Sam" and offers no entry at all. Raise it towards a
-   shift length if people pass the kiosk regularly.
-3. **A button press always wins.** If you genuinely arrive and leave straight
+1. **Nothing is written until the countdown finishes.** Recognition and recording
+   are separate steps (`/identify` then `/commit`). Walking away, or pressing
+   **Cancel** or Escape, means no entry ever existed — nothing to undo and
+   nothing for the office to correct.
+2. **A button press always wins.** If you genuinely arrive and leave straight
    away, press **Clock out** — a pressed button states intent, so it overrides
    the interval.
 
+**Be aware of the trade-off.** Because toggling is deliberately easy, the
+countdown is doing most of the safety work: somebody who walks up to the camera
+mid-shift, for any reason, *will* be offered a clock-out, and only the countdown
+stops it. That is the price of the kiosk behaving like a switch.
+
+This is a question of siting more than settings. A kiosk in a doorway people stop
+at is fine; one in a corridor people walk through is not, because they will be
+clocked in passing. If you cannot avoid that, lengthen `AUTO_CONFIRM_SECONDS` so
+there is more time to cancel, raise `AUTO_MIN_INTERVAL_SECONDS`, or set
+`KIOSK_AUTO_MODE=false` and use the buttons.
+
+Check the timesheet report for a week after go-live: unexpectedly short shifts, or
+rows flagged "No clock-out recorded", are the symptom of accidental clocking.
+
 Automatic entries are stored with `method = "auto"`, so a payroll query can tell
 them from a deliberate scan (`face`) or an office correction (`manual`).
+
+### Speed, and how far away it works
+
+Both were measured rather than guessed (`FACE_DETECT_MAX_SIDE` etc. are all
+tunable in `.env`):
+
+| | Time to show the name | Time to write the entry |
+|---|---|---|
+| Before | 1.03 s | 5.03 s |
+| Now | **0.54 s** | **2.54 s** |
+
+The interesting part is where the time was *not* going. Recognition itself takes
+about 42 ms; what cost a second was grabbing three frames 320 ms apart before the
+request even left the browser, and then a four-second countdown. So the wins were
+two frames instead of three, a 2 s countdown instead of 4 s, and a faster
+presence check — not faster maths.
+
+That also means detection range was available almost free. Detection costs ~11 ms
+at 640 px and ~28 ms at 960 px, both irrelevant beside the capture time, so the
+frames are now 960 px wide. **The browser was the real limit**: it downscaled
+every upload to 640 px, and no server setting can recover detail that has already
+been thrown away. `CAPTURE_MAX_WIDTH` controls that, and the test suite asserts it
+is never below `FACE_DETECT_MAX_SIDE`.
+
+`FACE_MIN_PIXELS` dropped from 80 to 55 on measured evidence: on real photographs
+a face is still matched at ~0.92 cosine (against ~0.10 for a different person)
+down to about 47 px wide, and YuNet still detects one at 30 px. 55 keeps headroom
+for a soft webcam frame. Together — 1.5× the pixels and a 1.45× lower floor — a
+face is recognised at roughly **twice** the distance it used to be.
+
+If people are still not picked up far enough away, in order of effect: check the
+camera actually delivers more than 720p (`CAPTURE_MAX_WIDTH` cannot invent
+detail), raise `CAPTURE_MAX_WIDTH` and `FACE_DETECT_MAX_SIDE` together to 1280,
+then lower `FACE_MIN_PIXELS` towards 45. Use **Camera check** to see the real
+face-pixel figures at the distance people actually stand.
+
+### When it cannot recognise somebody
+
+A single miss is normal while somebody walks up, so the screen stays quiet rather
+than flickering. But after a few consecutive misses it says what would help —
+"come a little closer", "hold still", "one at a time", "not recognised, try the
+Scan button". Failing silently would leave somebody watching a screen that looks
+broken.
 
 ### Bystanders
 
@@ -248,16 +339,22 @@ anything.
 |---|---|---|
 | `FACE_MATCH_THRESHOLD` | `0.40` | Cosine similarity needed to accept a match. Raise towards `0.45` to reduce the chance of a wrong match; lower it if genuine employees are being refused. OpenCV's reference figure for this model is `0.363`. |
 | `FACE_MATCH_MARGIN` | `0.05` | The best match must beat the runner-up by this much. Guards against look-alikes; raising it makes the system say "see the office" rather than guess. |
-| `FACE_MIN_PIXELS` | `80` | Minimum detected face width. Set well below what a person standing at the kiosk measures. |
+| `FACE_MIN_PIXELS` | `55` | Minimum detected face width — the main control on how far away recognition works. Measured floor is ~47px; below ~45 accuracy falls away. |
 | `FACE_MIN_SHARPNESS` | `45.0` | Blur gate, measured on the aligned crop. Set to roughly half of a good reading from Camera check. |
 | `SCAN_FRAMES` / `SCAN_MIN_AGREE` | `3` / `2` | Frames captured per scan, and how many must name the same person. Requiring agreement stops one unlucky frame writing the wrong name into the log. |
 | `CLOCK_COOLDOWN_SECONDS` | `90` | Repeat scans in the same direction inside this window are reported, not recorded again. |
 | `LIVENESS_REQUIRE_MOTION` | `true` | See the honest assessment below. |
 | `KIOSK_AUTO_MODE` | `true` | Hands-free clocking. `false` reverts to press-to-scan. |
-| `AUTO_CONFIRM_SECONDS` | `4` | Cancellable countdown before an automatic entry is written. `0` records instantly. |
-| `AUTO_MIN_INTERVAL_SECONDS` | `600` | Minimum gap between automatic entries for one person. The main guard against being clocked out while walking past. |
+| `AUTO_CONFIRM_SECONDS` | `2` | Cancellable countdown before an automatic entry is written. `0` records instantly (not advised — it removes the only guard against being clocked out in passing). |
+| `AUTO_REQUIRE_DEPARTURE` | `true` | Require the person to leave the camera's view before they can be clocked again. This is what makes the kiosk a toggle. |
+| `AUTO_DEPARTURE_MS` | `900` | How long the scene must read empty to count as having left. |
+| `AUTO_MIN_INTERVAL_SECONDS` | `10` | Backstop only, for when the departure check cannot be trusted. Keep it short — a long value blocks genuine clocking out. |
 | `AUTO_PRESENCE_THRESHOLD` | `7.0` | How much the scene must change to count as somebody arriving. Raise if it wakes at shadows. |
 | `FACE_DOMINANT_RATIO` | `1.35` | How much nearer the kiosk user must be than a bystander behind them. |
+| `CAPTURE_MAX_WIDTH` | `960` | Width the browser downscales to before upload. The binding constraint on range — the server cannot recover detail discarded here. |
+| `FACE_DETECT_MAX_SIDE` | `960` | Width the server detects at. Keep equal to `CAPTURE_MAX_WIDTH`. |
+| `AUTO_SCAN_FRAMES` | `2` | Frames per hands-free check. Two is the liveness minimum; capture time dominates responsiveness. |
+| `AUTO_FRAME_GAP_MS` | `300` | Gap between those frames. Shortening it makes live people look like photographs to the liveness check. |
 | `TIMEZONE` | `Europe/London` | Used for day boundaries and all displayed times. |
 
 For good recognition, enrol people **at the kiosk, under the kiosk's lighting**,
@@ -322,8 +419,8 @@ deactivating an employee drops them from the recognition index.
 python -m pytest
 ```
 
-129 tests, no MySQL needed — the suite runs against SQLite in memory. With face
-photos added (see below) that becomes 137.
+140 tests, no MySQL needed — the suite runs against SQLite in memory. With face
+photos added (see below) that becomes 148.
 
 ### The kiosk JavaScript
 
@@ -331,7 +428,9 @@ The hands-free countdown lives in browser code, so `tests/js/kiosk_harness.js`
 stubs the DOM, camera and network and drives the real `kiosk.js` with fake
 timers, checking that an empty doorway produces no requests, that nothing is
 committed while the countdown runs, that letting it finish commits exactly once,
-and that **Cancel prevents the commit**. `pytest` runs it automatically when
+that **Cancel prevents the commit**, that standing still does not clock you
+repeatedly while leaving and returning does, and that repeated misses produce an
+actionable hint. `pytest` runs it automatically when
 Node is installed, and skips it otherwise. To run it directly:
 
 ```bash
@@ -465,6 +564,11 @@ mysqldump -u clocking -p clocking > clocking-backup.sql
 | Kiosk clocks people out as they walk past | Raise `AUTO_MIN_INTERVAL_SECONDS`, or move the camera so it only sees people who stop at it. |
 | Kiosk keeps waking with nobody there | Raise `AUTO_PRESENCE_THRESHOLD`. |
 | Hands-free never triggers | Lower `AUTO_PRESENCE_THRESHOLD`; check the mode badge says "Automatic"; check **Camera check** sees a face. |
+| Not picked up until you are close | Raise `CAPTURE_MAX_WIDTH` and `FACE_DETECT_MAX_SIDE` to 1280, then lower `FACE_MIN_PIXELS` towards 45. Check the camera is better than 720p. |
+| Live people rejected as photographs | The liveness gap is too short or the camera too noisy. Raise `AUTO_FRAME_GAP_MS`, or lower `LIVENESS_MIN_MOTION` (weakens photo protection). |
+| Clocked in but wanted to stay in | Press **Cancel** during the countdown. |
+| Screen says "step away from the camera" | Working as intended — you have been clocked, and it will not clock you again until you have left the view. |
+| Will not clock me out when I come back | The kiosk has not seen the doorway empty. Check **Camera check**: the presence score must drop below the threshold when nobody is there. Lower `AUTO_DEPARTURE_MS` or raise `AUTO_PRESENCE_THRESHOLD`. |
 | "Face recognition is not set up on this server" | Run `python scripts/fetch_models.py`. |
 | "Face not recognised" for a known employee | Re-enrol at the kiosk under kiosk lighting. Check Camera check readings; consider lowering `FACE_MATCH_THRESHOLD` slightly. |
 | "Could not tell you apart from another record" | Two enrolments are too similar — often the same person enrolled twice. Check the employee list, remove the duplicate. |

@@ -10,7 +10,7 @@
  *
  * The CONFIRMING pause is a safety feature, not decoration. Without it, walking
  * past the camera two hours into a shift would clock you out; with it, the
- * screen says "Clocking OUT in 4..." and the person can cancel or simply walk
+ * screen says "Clocking OUT in 2..." and the person can cancel or simply walk
  * away. Nothing is written to the database until the countdown finishes.
  *
  * The buttons remain available throughout, and take priority over the automatic
@@ -36,7 +36,7 @@
     var dateEl = document.getElementById("kiosk-date");
     var modeEl = document.getElementById("kiosk-mode");
 
-    var capture = new window.FaceCapture(video);
+    var capture = new window.FaceCapture(video, { maxWidth: config.captureMaxWidth });
     var presence = new window.PresenceDetector(capture, {
         threshold: config.presenceThreshold
     });
@@ -52,9 +52,57 @@
     var backoffUntil = 0;          /* set when the server rate-limits us */
     var lastPersonId = null;       /* suppress immediate re-scan of one person */
     var lastPersonAt = 0;
+    /* Set after any resolved automatic outcome. While it is true the kiosk will
+     * not offer another automatic entry, however long somebody stands there. It
+     * clears only once the scene has read empty for AUTO_DEPARTURE_MS.
+     *
+     * This is what makes the kiosk a toggle. Gating on elapsed time instead
+     * either blocks genuine clocking out (a long interval) or clocks a
+     * stationary person in and straight back out (a short one). Gating on
+     * absence matches what people actually expect: you are clocked when you
+     * arrive, and not clocked again until you have been away. */
+    var awaitingDeparture = false;
+    var absentSince = 0;
 
     var RESULT_SECONDS = 6;
-    var REPEAT_SUPPRESS_MS = 20000;
+    /* Kept in step with the server's interval so the kiosk never starts a
+     * countdown the server would then refuse, which would read as it changing
+     * its mind. With departure gating doing the real work this is only a
+     * backstop, so it is short. */
+    var REPEAT_SUPPRESS_MS = (config.minIntervalSeconds || 10) * 1000;
+    /* Hands-free capture is deliberately leaner than a button press: two frames
+     * instead of three. Capture time dominates how long somebody waits for their
+     * name to appear, far more than the recognition itself does. */
+    var AUTO_FRAMES = config.autoFrames || 2;
+    var FRAME_GAP_MS = config.frameGapMs || 300;
+    var REQUIRE_DEPARTURE = config.requireDeparture !== false;
+    var DEPARTURE_MS = config.departureMs || 900;
+
+    var missStreak = 0;
+    var MISS_HINT_AFTER = 3;
+
+    /* Turn a refusal code into something the person can act on. */
+    function missHint(code) {
+        if (code === "face_too_small") {
+            return "Please come a little closer to the camera";
+        }
+        if (code === "face_too_blurred") {
+            return "Hold still — the image is blurred";
+        }
+        if (code === "multiple_faces") {
+            return "One at a time, please — step up to the camera";
+        }
+        if (code && code.indexOf("liveness_") === 0) {
+            return "Look at the camera — move your head slightly";
+        }
+        if (code === "not_recognised") {
+            return "Not recognised — try the Scan button, or see the office";
+        }
+        if (code === "no_templates" || code === "models_missing") {
+            return "Face recognition is not set up — please see the office";
+        }
+        return "Face the camera, or use the buttons";
+    }
 
     /* --- Wall clock ----------------------------------------------------- */
     function tickClock() {
@@ -86,6 +134,7 @@
         pending = null;
         cancelBtn.hidden = true;
         stopLooking();
+        missStreak = 0;
         setResult(
             "",
             "Ready",
@@ -104,6 +153,11 @@
         state = STATE.RESULT;
         pending = null;
         cancelBtn.hidden = true;
+        /* Nothing more happens automatically until this person has left. */
+        if (REQUIRE_DEPARTURE) {
+            awaitingDeparture = true;
+            absentSince = 0;
+        }
         /* Stop polling for a face while the result is on screen. Leaving this
          * timer running was a bug: once the screen returned to idle the stale
          * poll kept calling /identify with nobody in front of the camera, and
@@ -234,7 +288,7 @@
         busy = true;
 
         capture
-            .grabSeries(config.frames, 320)
+            .grabSeries(AUTO_FRAMES, FRAME_GAP_MS)
             .then(function (frames) {
                 if (!frames.length) {
                     return null;
@@ -253,12 +307,21 @@
                     if (data.code === "rate_limited") {
                         /* Stop hammering; the kiosk is polling too fast. */
                         backoffUntil = Date.now() + 15000;
+                        return;
                     }
-                    /* Anything else - no face, not recognised, too blurred - is
-                     * normal while somebody walks up. Stay quiet and try again;
-                     * announcing every miss would make the screen flicker. */
+                    /* A single miss is normal while somebody walks up, so the
+                     * screen stays quiet rather than flickering. But staying
+                     * quiet for ever is worse than a flicker: somebody the
+                     * recogniser keeps refusing would be left watching a screen
+                     * that appears to be doing nothing. After a few consecutive
+                     * misses, say what would help. */
+                    missStreak += 1;
+                    if (missStreak >= MISS_HINT_AFTER) {
+                        hint.textContent = missHint(data.code);
+                    }
                     return;
                 }
+                missStreak = 0;
 
                 if (data.code === "already_clocked") {
                     /* Only tell them if they are actually standing there, not
@@ -381,11 +444,34 @@
 
     /* --- Hands-free: the presence loop ---------------------------------- */
     function watchForArrivals() {
+        /* Measure every tick, even mid-countdown: that is how a departure gets
+         * noticed promptly rather than only once the screen returns to idle. */
+        var score = presence.measure();
+        var somebodyThere = score >= config.presenceThreshold;
+
+        if (!somebodyThere) {
+            if (!absentSince) {
+                absentSince = Date.now();
+            } else if (awaitingDeparture && Date.now() - absentSince >= DEPARTURE_MS) {
+                /* They have gone. The next arrival is a fresh clocking, which is
+                 * what turns "clocked in" into "clocked out" next time. */
+                awaitingDeparture = false;
+                lastPersonId = null;
+            }
+        } else {
+            absentSince = 0;
+        }
+
         if (state !== STATE.IDLE && state !== STATE.LOOKING) {
             return;
         }
-        var score = presence.measure();
-        var somebodyThere = score >= config.presenceThreshold;
+
+        if (awaitingDeparture) {
+            if (somebodyThere) {
+                hint.textContent = "All set — step away from the camera";
+            }
+            return;
+        }
 
         if (somebodyThere && state === STATE.IDLE) {
             state = STATE.LOOKING;

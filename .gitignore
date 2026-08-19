@@ -8,6 +8,10 @@ venv/
 
 # Secrets and local data
 .env
+# Any .env variant (backups, per-machine copies) - these hold real credentials.
+# The example file is the one deliberate exception.
+.env.*
+!.env.example
 instance/
 *.log
 

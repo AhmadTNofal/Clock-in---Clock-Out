@@ -12,12 +12,17 @@
 (function (global) {
     "use strict";
 
-    var MAX_WIDTH = 640;
+    var DEFAULT_MAX_WIDTH = 640;
     var JPEG_QUALITY = 0.82;
 
     function FaceCapture(videoEl, options) {
         this.video = videoEl;
         this.options = options || {};
+        /* How far a face can be from the camera and still be recognised is set
+         * here as much as anywhere on the server: downscaling to 640 discards the
+         * detail that lets a distant face be detected at all, and no server
+         * setting can put it back. */
+        this.maxWidth = this.options.maxWidth || DEFAULT_MAX_WIDTH;
         this.stream = null;
         this.canvas = document.createElement("canvas");
     }
@@ -39,8 +44,12 @@
         return global.navigator.mediaDevices
             .getUserMedia({
                 video: {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
+                    /* Ask for more than we upload: the sensor detail is what lets
+                     * a face 3 m away survive the downscale to maxWidth. Browsers
+                     * fall back to the nearest supported mode, so a 720p webcam
+                     * still works. */
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 },
                     facingMode: "user"
                 },
                 audio: false
@@ -90,7 +99,7 @@
         if (!video.videoWidth) {
             return null;
         }
-        var scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+        var scale = Math.min(1, this.maxWidth / video.videoWidth);
         var width = Math.round(video.videoWidth * scale);
         var height = Math.round(video.videoHeight * scale);
         this.canvas.width = width;

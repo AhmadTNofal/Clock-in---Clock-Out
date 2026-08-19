@@ -85,9 +85,16 @@ global.fetch = (url, opts) => {
   let payload = { ok: true, count: 0 };
   if (url.includes("identify")) payload = identifyReply;
   else if (url.includes("commit")) {
-    payload = { ok: true, recorded: true, direction: "in",
-      employee: { id: 7, name: "Sam Fletcher", first_name: "Sam" },
-      occurred_at: "07:31:02", occurred_on: "Monday 19 August 2026" };
+    /* Echo back whatever the last identify offered, as the real server does.
+     * Hardcoding a direction here once masked a genuine result: the screen
+     * showed "Clocked IN" for what was actually a clock-out. */
+    payload = {
+      ok: true, recorded: true,
+      direction: (identifyReply && identifyReply.direction) || "in",
+      employee: (identifyReply && identifyReply.employee) ||
+        { id: 7, name: "Sam Fletcher", first_name: "Sam" },
+      occurred_at: "07:31:02", occurred_on: "Monday 19 August 2026",
+    };
   }
   return Promise.resolve({ json: () => Promise.resolve(payload) });
 };
@@ -105,11 +112,14 @@ global.Date = class extends RealDate {
   static now() { return now; }
 };
 
+/* Mirrors the shipped defaults in app/config.py. */
 global.KIOSK_CONFIG = {
   token: "tok", scanUrl: "/api/kiosk/scan", identifyUrl: "/api/kiosk/identify",
   commitUrl: "/api/kiosk/commit", onsiteUrl: "/api/kiosk/onsite",
-  frames: 2, autoMode: true, confirmSeconds: 4, pollMs: 900,
-  presenceMs: 350, presenceThreshold: 7.0,
+  frames: 3, autoMode: true, confirmSeconds: 2, pollMs: 600,
+  presenceMs: 200, presenceThreshold: 7.0,
+  autoFrames: 2, frameGapMs: 300, minIntervalSeconds: 10, captureMaxWidth: 960,
+  requireDeparture: true, departureMs: 900,
 };
 eval(fs.readFileSync(path.join(APP, "capture.js"), "utf8"));
 eval(fs.readFileSync(path.join(APP, "kiosk.js"), "utf8"));
@@ -127,7 +137,7 @@ function check(label, ok, extra) {
 
 const pendingIn = {
   ok: true, code: "pending", pending: true, confirm_token: "signed.token",
-  confirm_seconds: 4, direction: "in",
+  confirm_seconds: 2, direction: "in",
   employee: { id: 7, name: "Sam Fletcher", first_name: "Sam" },
 };
 
@@ -163,7 +173,7 @@ const pendingIn = {
   const beforeCancel = commits();
   identifyReply = {
     ok: true, code: "pending", pending: true, confirm_token: "signed.token2",
-    confirm_seconds: 4, direction: "out",
+    confirm_seconds: 2, direction: "out",
     employee: { id: 9, name: "Ada Reed", first_name: "Ada" },
   };
   scenePixel = 220;
@@ -202,6 +212,58 @@ const pendingIn = {
   check("an unknown face commits nothing", commits() === beforeUnknown, `commits=${commits()}`);
   check("an unknown face does not show a scary error",
         !action().toLowerCase().includes("not recorded"), `action="${action()}"`);
+
+  check("hands-free uploads the lean frame count",
+        (calls.find((c) => c.url.includes("identify")).body.frames || []).length === 2,
+        `frames=${(calls.find((c) => c.url.includes("identify")).body.frames || []).length}`);
+
+  // 7. Repeated misses must eventually tell the person what would help, rather
+  //    than leaving them watching a screen that looks inert.
+  check("repeated misses produce an actionable hint",
+        /not recognised|face the camera|closer|hold still|see the office/i
+          .test(els["kiosk-hint"].textContent),
+        `hint="${els["kiosk-hint"].textContent}"`);
+
+  // 8. THE TOGGLE. Clocked in, then: standing still must NOT clock again, but
+  //    leaving and coming back must clock the other way.
+  scenePixel = 0;
+  await advance(15000);                       // reset to a clean idle state
+  calls.length = 0;
+
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-in",
+    confirm_seconds: 2, direction: "in",
+    employee: { id: 42, name: "Rhys Morgan", first_name: "Rhys" },
+  };
+  scenePixel = 205;                           // Rhys arrives
+  await advanceUntil("clocked in", () => action().includes("Clocked IN"), 12000);
+  const afterIn = commits();
+  check("arriving clocks you IN", afterIn === 1, `commits=${afterIn}`);
+
+  // Rhys stays put, reading the screen. Server would now offer "out".
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-out",
+    confirm_seconds: 2, direction: "out",
+    employee: { id: 42, name: "Rhys Morgan", first_name: "Rhys" },
+  };
+  await advance(20000);                       // a long time, still standing there
+  check("STANDING STILL DOES NOT CLOCK YOU OUT AGAIN",
+        commits() === afterIn, `commits=${commits()} (expected ${afterIn})`);
+  check("the screen asks them to step away",
+        /step away/i.test(els["kiosk-hint"].textContent),
+        `hint="${els["kiosk-hint"].textContent}"`);
+
+  // Rhys walks away...
+  scenePixel = 0;
+  await advance(4000);
+  check("walking away commits nothing by itself", commits() === afterIn);
+
+  // ...and comes back. This must clock him OUT.
+  scenePixel = 205;
+  const cameBack = await advanceUntil(
+    "clocked out", () => action().includes("Clocked OUT"), 12000);
+  check("COMING BACK CLOCKS YOU OUT", cameBack && commits() === afterIn + 1,
+        `commits=${commits()} action="${action()}"`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

@@ -60,6 +60,12 @@ def index():
         auto_poll_ms=current_app.config["AUTO_POLL_MS"],
         auto_presence_ms=current_app.config["AUTO_PRESENCE_MS"],
         auto_presence_threshold=current_app.config["AUTO_PRESENCE_THRESHOLD"],
+        auto_scan_frames=current_app.config["AUTO_SCAN_FRAMES"],
+        auto_frame_gap_ms=current_app.config["AUTO_FRAME_GAP_MS"],
+        auto_min_interval_seconds=current_app.config["AUTO_MIN_INTERVAL_SECONDS"],
+        capture_max_width=current_app.config["CAPTURE_MAX_WIDTH"],
+        auto_require_departure=current_app.config["AUTO_REQUIRE_DEPARTURE"],
+        auto_departure_ms=current_app.config["AUTO_DEPARTURE_MS"],
     )
 
 

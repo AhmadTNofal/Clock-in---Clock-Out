@@ -65,7 +65,13 @@
         confirmSeconds: {{ auto_confirm_seconds | tojson }},
         pollMs: {{ auto_poll_ms | tojson }},
         presenceMs: {{ auto_presence_ms | tojson }},
-        presenceThreshold: {{ auto_presence_threshold | tojson }}
+        presenceThreshold: {{ auto_presence_threshold | tojson }},
+        autoFrames: {{ auto_scan_frames | tojson }},
+        frameGapMs: {{ auto_frame_gap_ms | tojson }},
+        minIntervalSeconds: {{ auto_min_interval_seconds | tojson }},
+        captureMaxWidth: {{ capture_max_width | tojson }},
+        requireDeparture: {{ auto_require_departure | tojson }},
+        departureMs: {{ auto_departure_ms | tojson }}
     };
 </script>
 <script src="{{ url_for('static', filename='js/kiosk.js') }}"></script>

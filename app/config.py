@@ -60,9 +60,18 @@ class Config:
     # --- Recognition tuning ----------------------------------------------
     FACE_MATCH_THRESHOLD = _float("FACE_MATCH_THRESHOLD", 0.40)
     FACE_MATCH_MARGIN = _float("FACE_MATCH_MARGIN", 0.05)
-    FACE_MIN_PIXELS = _int("FACE_MIN_PIXELS", 80)
+    # 55px is evidence-based, not a guess: measured on real photos, a face is
+    # still matched at ~0.92 cosine (against ~0.10 for a different person) down
+    # to about 47px wide, and YuNet still detects at 30px. 55 leaves headroom
+    # for a soft webcam frame while roughly halving the distance limit that an
+    # 80px floor imposed. Check yours on the Camera check page.
+    FACE_MIN_PIXELS = _int("FACE_MIN_PIXELS", 55)
     FACE_MIN_SHARPNESS = _float("FACE_MIN_SHARPNESS", 45.0)
-    FACE_DETECT_MAX_SIDE = _int("FACE_DETECT_MAX_SIDE", 640)
+    # Detection range scales directly with this: a face 40px wide in a 640px
+    # frame is 60px in a 960px one. Detection costs about 28ms at 960 against
+    # 11ms at 640 - irrelevant next to the frame capture time, so the pixels buy
+    # range almost for free. Must be >= CAPTURE_MAX_WIDTH to be of any use.
+    FACE_DETECT_MAX_SIDE = _int("FACE_DETECT_MAX_SIDE", 960)
     FACE_DETECT_CONFIDENCE = _float("FACE_DETECT_CONFIDENCE", 0.85)
 
     SCAN_FRAMES = _int("SCAN_FRAMES", 3)
@@ -90,19 +99,49 @@ class Config:
     # Seconds the on-screen countdown runs before an automatic entry is
     # committed, giving somebody who only walked past a chance to cancel.
     # 0 commits immediately.
-    AUTO_CONFIRM_SECONDS = _int("AUTO_CONFIRM_SECONDS", 4)
-    # Minimum gap between two *automatic* entries for the same person. Much
-    # longer than CLOCK_COOLDOWN_SECONDS on purpose: an automatic scan carries
-    # no stated intent, so somebody crossing the camera's view an hour into
-    # their shift must not be clocked out. A button press overrides it.
-    AUTO_MIN_INTERVAL_SECONDS = _int("AUTO_MIN_INTERVAL_SECONDS", 600)
+    AUTO_CONFIRM_SECONDS = _int("AUTO_CONFIRM_SECONDS", 2)
+    # What stops the kiosk clocking somebody twice is *absence*, not elapsed
+    # time: after an automatic entry it waits until the person has walked away
+    # before it will clock them again. That is what makes it behave like a
+    # toggle - arrive and you are clocked in, come back later and you are
+    # clocked out - without a stationary person being clocked over and over.
+    # See AUTO_REQUIRE_DEPARTURE below.
+    #
+    # This interval is only a backstop for the case where the browser's
+    # departure check cannot be trusted: a reloaded page, a second kiosk, or a
+    # camera that cannot tell an empty doorway from an occupied one. Keep it
+    # short, or it starts blocking genuine toggling; it must be shorter than the
+    # time somebody would realistically take to leave and return.
+    AUTO_MIN_INTERVAL_SECONDS = _int("AUTO_MIN_INTERVAL_SECONDS", 10)
+    # Require the scene to read empty again before offering the same person
+    # another automatic entry. Switching this off falls back to the interval
+    # above being the only guard, which on a busy doorway means somebody
+    # standing still can be clocked repeatedly.
+    AUTO_REQUIRE_DEPARTURE = _bool("AUTO_REQUIRE_DEPARTURE", True)
+    # How long the scene must read empty for a departure to count. Long enough
+    # not to be triggered by somebody shifting their weight, short enough that
+    # stepping aside and back is not a chore.
+    AUTO_DEPARTURE_MS = _int("AUTO_DEPARTURE_MS", 900)
     # How often the kiosk runs recognition once it thinks somebody is there.
-    AUTO_POLL_MS = _int("AUTO_POLL_MS", 900)
+    AUTO_POLL_MS = _int("AUTO_POLL_MS", 600)
     # How often it checks whether anybody has arrived (browser-side, cheap).
-    AUTO_PRESENCE_MS = _int("AUTO_PRESENCE_MS", 350)
+    AUTO_PRESENCE_MS = _int("AUTO_PRESENCE_MS", 200)
     # Mean grey-level difference from the empty-scene reference that counts as
     # "somebody is standing there". Raise it if the kiosk scans at shadows.
     AUTO_PRESENCE_THRESHOLD = _float("AUTO_PRESENCE_THRESHOLD", 7.0)
+    # Frames per hands-free identification, and the gap between them. Two frames
+    # is the minimum the liveness check can work with, and capture time is the
+    # single largest component of "how long until my name appears" - three frames
+    # at 320ms cost 640ms before the request even left the browser.
+    AUTO_SCAN_FRAMES = _int("AUTO_SCAN_FRAMES", 2)
+    # Do not shorten this much: the liveness check needs enough time between
+    # frames for a real face to change measurably. Too short and live people get
+    # rejected as photographs.
+    AUTO_FRAME_GAP_MS = _int("AUTO_FRAME_GAP_MS", 300)
+    # Width the browser downscales frames to before upload. This, not the server,
+    # was the real limit on detection range: the server never saw more detail
+    # than this however high FACE_DETECT_MAX_SIDE was set.
+    CAPTURE_MAX_WIDTH = _int("CAPTURE_MAX_WIDTH", 960)
 
     # --- Uploads / limits -------------------------------------------------
     # A scan posts a handful of JPEG frames; 12 MB is generous headroom.

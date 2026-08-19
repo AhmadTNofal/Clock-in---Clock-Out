@@ -359,3 +359,216 @@ def test_camera_check_reports_the_new_thresholds(logged_in):
     assert "FACE_DOMINANT_RATIO" in body
     assert "presence-score" in body
     assert "PresenceDetector" in body
+
+
+# --------------------------------------------------------------------------
+# Toggle behaviour: in -> out, out -> in
+# --------------------------------------------------------------------------
+def test_default_interval_gives_toggle_behaviour(client, db, enrolled, app):
+    """Clocked in, so the next appearance must offer a clock-out.
+
+    With the interval at its 60s default the kiosk behaves as a switch. The
+    trade-off is documented in config.py: at 60s, crossing the camera's view
+    mid-shift does offer a clock-out, and the countdown is the guard.
+    """
+    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 60
+
+    attendance.record_clock(
+        enrolled,
+        direction="in",
+        occurred_at=utcnow() - dt.timedelta(seconds=90),
+        cooldown_seconds=0,
+    )
+    assert attendance.is_clocked_in(enrolled.id)
+
+    payload = _identify(client)
+    assert payload["code"] == "pending"
+    assert payload["direction"] == "out"
+
+    _commit(client, payload["confirm_token"])
+    assert not attendance.is_clocked_in(enrolled.id)
+
+
+def test_toggle_runs_both_ways(client, db, enrolled, app):
+    """in -> out -> in, each appearance flipping the state."""
+    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 60
+    seen = []
+
+    def age_everything(seconds):
+        """Shift every entry back, preserving their order.
+
+        Ageing only the newest row would move it *behind* an older one and
+        scramble the sequence the alternation depends on.
+        """
+        for event in db.session.query(AttendanceEvent).all():
+            event.occurred_at = event.occurred_at - dt.timedelta(seconds=seconds)
+        db.session.commit()
+
+    for step in range(3):
+        if step:
+            age_everything(90)
+        payload = _identify(client)
+        assert payload["code"] == "pending", payload
+        _commit(client, payload["confirm_token"])
+        seen.append(payload["direction"])
+
+    assert seen == ["in", "out", "in"]
+    assert attendance.is_clocked_in(enrolled.id)
+
+
+def test_lingering_still_cannot_double_punch(client, db, enrolled, app):
+    """Toggling must not mean a single approach clocks in then straight out."""
+    app.config["AUTO_MIN_INTERVAL_SECONDS"] = 60
+    _commit(client, _identify(client)["confirm_token"])
+
+    # Still standing there a moment later.
+    second = _identify(client)
+    assert second["code"] == "already_clocked"
+    assert "confirm_token" not in second
+    assert db.session.query(AttendanceEvent).count() == 1
+
+
+# --------------------------------------------------------------------------
+# Speed and range settings
+# --------------------------------------------------------------------------
+def test_range_settings_are_self_consistent(app):
+    """Invariants, not exact numbers - the numbers are tunable per site.
+
+    The browser upload width is the binding constraint on range: the server
+    cannot recover detail the browser threw away, so uploading narrower frames
+    than the detector will use silently caps how far away a face can be.
+    """
+    capture_width = app.config["CAPTURE_MAX_WIDTH"]
+    detect_side = app.config["FACE_DETECT_MAX_SIDE"]
+
+    assert capture_width >= detect_side, (
+        f"CAPTURE_MAX_WIDTH ({capture_width}) is below FACE_DETECT_MAX_SIDE "
+        f"({detect_side}): the extra server-side pixels can never exist"
+    )
+    # Measured floor: YuNet detects to ~30px, recognition holds to ~47px.
+    assert app.config["FACE_MIN_PIXELS"] >= 40, "below the measured accuracy floor"
+
+
+def test_speed_settings_are_sane(app):
+    assert app.config["AUTO_SCAN_FRAMES"] >= 2, (
+        "the liveness check compares frames, so it needs at least two"
+    )
+    assert app.config["AUTO_FRAME_GAP_MS"] >= 150, (
+        "too short a gap leaves no real movement for the liveness check to see"
+    )
+    assert app.config["AUTO_CONFIRM_SECONDS"] >= 1, (
+        "a countdown of zero removes the chance to cancel"
+    )
+
+
+def test_shipped_env_example_matches_the_code_defaults():
+    """Guards against .env.example drifting from config.py.
+
+    Anybody installing this copies .env.example, so a stale value there silently
+    becomes the deployed behaviour - which is exactly how the tuned defaults got
+    overridden during development.
+    """
+    import re
+
+    from app.config import BASE_DIR
+
+    text = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    settings = dict(re.findall(r"^([A-Z_]+)=(.*)$", text, re.M))
+
+    from app.config import Config
+
+    for key in (
+        "FACE_MIN_PIXELS",
+        "FACE_DETECT_MAX_SIDE",
+        "CAPTURE_MAX_WIDTH",
+        "AUTO_SCAN_FRAMES",
+        "AUTO_FRAME_GAP_MS",
+        "AUTO_CONFIRM_SECONDS",
+        "AUTO_MIN_INTERVAL_SECONDS",
+        "AUTO_POLL_MS",
+        "AUTO_PRESENCE_MS",
+        "AUTO_DEPARTURE_MS",
+    ):
+        assert key in settings, f"{key} is missing from .env.example"
+        if settings[key] == "":
+            continue
+        assert str(getattr(Config, key)) == settings[key], (
+            f"{key}: .env.example says {settings[key]!r} but config.py resolves to "
+            f"{getattr(Config, key)!r}"
+        )
+
+
+def test_kiosk_page_carries_the_speed_and_range_settings(client):
+    body = client.get("/").data.decode("utf-8")
+    for key in ("autoFrames", "frameGapMs", "minIntervalSeconds", "captureMaxWidth"):
+        assert key in body, f"{key} missing from the kiosk page"
+
+
+def test_a_small_distant_face_is_accepted_at_the_new_floor():
+    """A 60px face must pass the size gate that an 80px floor rejected."""
+    from app.face.engine import EngineSettings, FaceEngine, FaceTooSmall
+
+    settings = EngineSettings(
+        detector_model="x", recogniser_model="y", min_face_pixels=55
+    )
+    engine = FaceEngine.__new__(FaceEngine)
+    engine.settings = settings
+    engine._lock = threading.Lock()
+    engine._detect_rows = lambda image: np.vstack([_row(60)])
+    engine._embed_row = lambda image, row: (
+        unit_vector(1), 500.0, np.zeros((112, 112, 3), dtype=np.uint8)
+    )
+
+    observation = engine.observe(np.zeros((480, 640, 3), dtype=np.uint8))
+    assert observation.box[2] == 60
+
+    # And something genuinely too far away is still refused.
+    engine._detect_rows = lambda image: np.vstack([_row(30)])
+    with pytest.raises(FaceTooSmall):
+        engine.observe(np.zeros((480, 640, 3), dtype=np.uint8))
+
+
+# --------------------------------------------------------------------------
+# Toggling is gated on absence, not on elapsed time
+# --------------------------------------------------------------------------
+def test_returning_after_the_short_interval_toggles(client, db, enrolled, app):
+    """Leave and come back: clocked in becomes clocked out.
+
+    The server's interval is only a backstop now - the browser requires the
+    person to have left the camera's view. So this interval must stay short
+    enough that a genuine return is never blocked.
+    """
+    interval = app.config["AUTO_MIN_INTERVAL_SECONDS"]
+    assert interval <= 30, (
+        f"AUTO_MIN_INTERVAL_SECONDS is {interval}s; anything long blocks genuine "
+        "toggling, which is what departure gating exists to avoid"
+    )
+
+    _commit(client, _identify(client)["confirm_token"])
+    assert attendance.is_clocked_in(enrolled.id)
+
+    # They walked away and came back, just after the backstop interval.
+    last = attendance.last_event(enrolled.id)
+    last.occurred_at = utcnow() - dt.timedelta(seconds=interval + 1)
+    db.session.commit()
+
+    second = _identify(client)
+    assert second["code"] == "pending", second
+    assert second["direction"] == "out"
+    _commit(client, second["confirm_token"])
+    assert not attendance.is_clocked_in(enrolled.id)
+
+
+def test_departure_settings_reach_the_kiosk_page(client, app):
+    """The browser enforces departure, so it has to be told about it."""
+    body = client.get("/").data.decode("utf-8")
+    assert "requireDeparture" in body
+    assert "departureMs" in body
+    assert "requireDeparture: true" in body
+
+
+def test_departure_gating_is_on_by_default(app):
+    assert app.config["AUTO_REQUIRE_DEPARTURE"] is True
+    assert app.config["AUTO_DEPARTURE_MS"] >= 300, (
+        "too short and somebody shifting their weight counts as leaving"
+    )
