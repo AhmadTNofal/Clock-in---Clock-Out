@@ -22,6 +22,19 @@
                 <li><span>Run a measurement to see figures.</span><span></span></li>
             </ul>
 
+            <h2>Presence (live)</h2>
+            <ul class="mf-measure-list">
+                <li><span>Change from empty scene</span><span id="presence-score">&mdash;</span></li>
+                <li><span>Reads as somebody there</span><span id="presence-verdict">&mdash;</span></li>
+            </ul>
+            <p class="mf-note">
+                Runs continuously in this browser, exactly as the kiosk does. Step out of
+                view to let it learn the empty scene, then step in: the score should climb
+                clearly above <strong>{{ thresholds.presence_threshold }}</strong>.
+                <button class="mf-btn mf-btn-secondary" id="presence-reset" type="button"
+                        style="padding: 0.15rem 0.6rem; font-size: 0.85rem;">Relearn empty scene</button>
+            </p>
+
             <h2>Current thresholds</h2>
             <ul class="mf-measure-list">
                 <li><span>FACE_MIN_PIXELS</span><span>{{ thresholds.min_pixels }}</span></li>
@@ -29,6 +42,8 @@
                 <li><span>FACE_MATCH_THRESHOLD</span><span>{{ thresholds.match_threshold }}</span></li>
                 <li><span>FACE_MATCH_MARGIN</span><span>{{ thresholds.match_margin }}</span></li>
                 <li><span>LIVENESS_MIN_MOTION</span><span>{{ thresholds.min_motion }}</span></li>
+                <li><span>AUTO_PRESENCE_THRESHOLD</span><span>{{ thresholds.presence_threshold }}</span></li>
+                <li><span>FACE_DOMINANT_RATIO</span><span>{{ thresholds.dominant_ratio }}</span></li>
             </ul>
         </div>
     </div>
@@ -63,6 +78,14 @@
         var capture = new window.FaceCapture(video);
         var submitUrl = {{ url_for('admin.camera_check_submit') | tojson }};
         var csrfToken = {{ csrf_token() | tojson }};
+        var presenceThreshold = {{ thresholds.presence_threshold | tojson }};
+        var presence = new window.PresenceDetector(capture, { threshold: presenceThreshold });
+        var scoreEl = document.getElementById("presence-score");
+        var verdictEl = document.getElementById("presence-verdict");
+
+        document.getElementById("presence-reset").addEventListener("click", function () {
+            presence.reset();
+        });
 
         function row(label, value) {
             return "<li><span>" + label + "</span><span>" + value + "</span></li>";
@@ -115,6 +138,19 @@
             .then(function () {
                 hint.textContent = "Stand as an employee would, then measure.";
                 button.disabled = false;
+                /* Let the detector learn the empty scene, then report live. */
+                window.setTimeout(function () {
+                    presence.reset();
+                    window.setInterval(function () {
+                        var score = presence.measure();
+                        scoreEl.textContent = score.toFixed(2);
+                        var there = score >= presenceThreshold;
+                        verdictEl.textContent = there ? "yes" : "no";
+                        verdictEl.style.color = there
+                            ? "var(--mf-green)"
+                            : "var(--mf-grey-600)";
+                    }, 350);
+                }, 1200);
             })
             .catch(function (error) {
                 hint.textContent = error.message;

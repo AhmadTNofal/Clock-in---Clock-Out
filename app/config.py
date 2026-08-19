@@ -67,6 +67,9 @@ class Config:
 
     SCAN_FRAMES = _int("SCAN_FRAMES", 3)
     SCAN_MIN_AGREE = _int("SCAN_MIN_AGREE", 2)
+    # In hands-free mode the nearest face must be this many times wider than the
+    # next one for it to count as "the person at the kiosk".
+    FACE_DOMINANT_RATIO = _float("FACE_DOMINANT_RATIO", 1.35)
     ENROL_MIN_SAMPLES = _int("ENROL_MIN_SAMPLES", 3)
     ENROL_MAX_SAMPLES = _int("ENROL_MAX_SAMPLES", 6)
 
@@ -81,10 +84,33 @@ class Config:
     KIOSK_TOKEN = os.getenv("KIOSK_TOKEN", "")
     KIOSK_DEVICE_LABEL = os.getenv("KIOSK_DEVICE_LABEL", "Kiosk")
 
+    # --- Hands-free (automatic) clocking ----------------------------------
+    # The kiosk watches for a face and clocks people with no button press.
+    KIOSK_AUTO_MODE = _bool("KIOSK_AUTO_MODE", True)
+    # Seconds the on-screen countdown runs before an automatic entry is
+    # committed, giving somebody who only walked past a chance to cancel.
+    # 0 commits immediately.
+    AUTO_CONFIRM_SECONDS = _int("AUTO_CONFIRM_SECONDS", 4)
+    # Minimum gap between two *automatic* entries for the same person. Much
+    # longer than CLOCK_COOLDOWN_SECONDS on purpose: an automatic scan carries
+    # no stated intent, so somebody crossing the camera's view an hour into
+    # their shift must not be clocked out. A button press overrides it.
+    AUTO_MIN_INTERVAL_SECONDS = _int("AUTO_MIN_INTERVAL_SECONDS", 600)
+    # How often the kiosk runs recognition once it thinks somebody is there.
+    AUTO_POLL_MS = _int("AUTO_POLL_MS", 900)
+    # How often it checks whether anybody has arrived (browser-side, cheap).
+    AUTO_PRESENCE_MS = _int("AUTO_PRESENCE_MS", 350)
+    # Mean grey-level difference from the empty-scene reference that counts as
+    # "somebody is standing there". Raise it if the kiosk scans at shadows.
+    AUTO_PRESENCE_THRESHOLD = _float("AUTO_PRESENCE_THRESHOLD", 7.0)
+
     # --- Uploads / limits -------------------------------------------------
     # A scan posts a handful of JPEG frames; 12 MB is generous headroom.
     MAX_CONTENT_LENGTH = 12 * 1024 * 1024
-    RECOGNISE_RATE_LIMIT = _int("RECOGNISE_RATE_LIMIT", 30)
+    # Hands-free mode polls while somebody is standing there, so this ceiling
+    # is well above a press-to-scan kiosk's needs. It still caps a runaway
+    # client or anything else on the network hammering the endpoint.
+    RECOGNISE_RATE_LIMIT = _int("RECOGNISE_RATE_LIMIT", 150)
     RECOGNISE_RATE_WINDOW = _int("RECOGNISE_RATE_WINDOW", 60)
     LOGIN_RATE_LIMIT = _int("LOGIN_RATE_LIMIT", 10)
     LOGIN_RATE_WINDOW = _int("LOGIN_RATE_WINDOW", 300)

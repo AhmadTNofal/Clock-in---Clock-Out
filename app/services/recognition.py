@@ -146,7 +146,12 @@ class ScanOutcome:
         return average_embedding([obs.embedding for obs in self.observations])
 
 
-def observe_frames(frames: list[str | bytes], engine: FaceEngine) -> tuple[list[FaceObservation], FaceError | None]:
+def observe_frames(
+    frames: list[str | bytes],
+    engine: FaceEngine,
+    *,
+    dominant_ratio: float | None = None,
+) -> tuple[list[FaceObservation], FaceError | None]:
     """Embed every frame, collecting the first error rather than aborting.
 
     A scan of three frames where one is blurred should still succeed, so errors
@@ -156,15 +161,24 @@ def observe_frames(frames: list[str | bytes], engine: FaceEngine) -> tuple[list[
     first_error: FaceError | None = None
     for frame in frames:
         try:
-            observations.append(engine.observe(decode_image(frame)))
+            observations.append(
+                engine.observe(decode_image(frame), dominant_ratio=dominant_ratio)
+            )
         except FaceError as exc:
             if first_error is None:
                 first_error = exc
     return observations, first_error
 
 
-def scan(frames: list[str | bytes], *, app: Flask | None = None) -> ScanOutcome:
-    """Turn kiosk frames into an identified employee, or an explained refusal."""
+def scan(
+    frames: list[str | bytes], *, app: Flask | None = None, automatic: bool = False
+) -> ScanOutcome:
+    """Turn kiosk frames into an identified employee, or an explained refusal.
+
+    *automatic* marks a hands-free scan, where nobody pressed a button. Such a
+    scan tolerates bystanders in the background, provided one face is clearly
+    nearest the camera - see ``FaceEngine.observe``.
+    """
     app = app or current_app._get_current_object()  # type: ignore[attr-defined]
     config = app.config
 
@@ -183,7 +197,11 @@ def scan(frames: list[str | bytes], *, app: Flask | None = None) -> ScanOutcome:
             "Face recognition is not set up on this server. Please see the office.",
         )
 
-    observations, error = observe_frames(frames, engine)
+    observations, error = observe_frames(
+        frames,
+        engine,
+        dominant_ratio=config["FACE_DOMINANT_RATIO"] if automatic else None,
+    )
     if not observations:
         assert error is not None
         return ScanOutcome(False, error.code, error.message)

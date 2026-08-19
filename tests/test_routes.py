@@ -108,7 +108,7 @@ def _fake_observation(vector):
 def _stub_engine(monkeypatch, vectors, error=None):
     """Make recognition.scan see *vectors* instead of running the real models."""
 
-    def fake_observe_frames(frames, engine):
+    def fake_observe_frames(frames, engine, **kwargs):
         if error is not None:
             return [], error
         return [_fake_observation(v) for v in vectors], None

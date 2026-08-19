@@ -12,7 +12,9 @@
     <div class="mf-kiosk-top">
         <div>
             <span class="mf-brand">{{ app_name }}</span>
-            <div class="mf-kiosk-date" id="kiosk-location">{{ device_label }}</div>
+            <div class="mf-kiosk-date">
+                {{ device_label }} &middot; <span id="kiosk-mode" class="mf-badge">&hellip;</span>
+            </div>
         </div>
         <div style="text-align: right;">
             <div class="mf-kiosk-clock" id="kiosk-clock">--:--</div>
@@ -29,10 +31,14 @@
         <div class="mf-kiosk-panel">
             <div class="mf-kiosk-result" id="kiosk-result">
                 <div class="mf-result-name" id="result-name">Ready</div>
-                <div class="mf-result-action" id="result-action">Press <strong>Scan</strong> to clock in or out</div>
+                <div class="mf-result-action" id="result-action">Starting up&hellip;</div>
                 <div class="mf-result-time" id="result-time"></div>
                 <div class="mf-result-detail" id="result-detail"></div>
             </div>
+
+            <button class="mf-scan-btn mf-cancel-btn" id="cancel-btn" type="button" hidden>
+                Cancel
+            </button>
 
             <button class="mf-scan-btn" id="scan-btn" type="button" disabled>Scan</button>
 
@@ -51,8 +57,15 @@
     window.KIOSK_CONFIG = {
         token: {{ kiosk_token | tojson }},
         scanUrl: {{ url_for('kiosk.api_scan') | tojson }},
+        identifyUrl: {{ url_for('kiosk.api_identify') | tojson }},
+        commitUrl: {{ url_for('kiosk.api_commit') | tojson }},
         onsiteUrl: {{ url_for('kiosk.api_onsite') | tojson }},
-        frames: {{ scan_frames | tojson }}
+        frames: {{ scan_frames | tojson }},
+        autoMode: {{ auto_mode | tojson }},
+        confirmSeconds: {{ auto_confirm_seconds | tojson }},
+        pollMs: {{ auto_poll_ms | tojson }},
+        presenceMs: {{ auto_presence_ms | tojson }},
+        presenceThreshold: {{ auto_presence_threshold | tojson }}
     };
 </script>
 <script src="{{ url_for('static', filename='js/kiosk.js') }}"></script>

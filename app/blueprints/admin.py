@@ -409,6 +409,8 @@ def camera_check():
             "match_threshold": current_app.config["FACE_MATCH_THRESHOLD"],
             "match_margin": current_app.config["FACE_MATCH_MARGIN"],
             "min_motion": current_app.config["LIVENESS_MIN_MOTION"],
+            "presence_threshold": current_app.config["AUTO_PRESENCE_THRESHOLD"],
+            "dominant_ratio": current_app.config["FACE_DOMINANT_RATIO"],
         },
     )
 

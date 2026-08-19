@@ -97,14 +97,19 @@ def record_clock(
     cooldown_seconds: int = 90,
     occurred_at: dt.datetime | None = None,
     commit: bool = True,
+    automatic: bool = False,
 ) -> ClockResult:
     """Record a clock event for *employee*.
 
     *direction* defaults to the alternating value from :func:`next_direction`.
     Pass it explicitly only when the user or an administrator has chosen it.
+
+    *automatic* marks a hands-free entry that nobody asked for by pressing
+    anything. Such an entry never overrides the cooldown, even when a direction
+    is supplied, because merely being seen by the camera states no intent.
     """
-    # Whether the caller chose the direction matters to the cooldown rule below.
-    chose_direction = direction is not None
+    # Whether anybody actually asked for this direction governs the cooldown.
+    stated_intent = direction is not None and not automatic
     if direction is None:
         direction = next_direction(employee.id)
     if direction not in DIRECTIONS:
@@ -120,15 +125,16 @@ def record_clock(
         )
         if within_cooldown:
             assert previous is not None  # implied by within_cooldown
-            # An automatic scan has no stated intent: it just alternates. So any
-            # entry inside the window means "you have only just scanned" - report
-            # that state back instead of alternating. Without this, lingering in
-            # front of the camera clocks you in and straight back out again.
+            # With no stated intent - the Scan button, or hands-free - the
+            # direction is merely the alternation of the last entry. So any entry
+            # inside the window means "you have only just clocked": report that
+            # state back instead of alternating. Without this, lingering in front
+            # of the camera clocks you in and straight back out again.
             #
             # An explicitly chosen direction does state intent, so it is honoured
             # unless it merely repeats the last entry. Somebody who genuinely
             # arrives and leaves again immediately can still press Clock out.
-            if not chose_direction:
+            if not stated_intent:
                 return ClockResult(
                     employee=employee,
                     direction=previous.direction,

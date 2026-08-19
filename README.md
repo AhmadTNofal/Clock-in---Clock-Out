@@ -13,15 +13,17 @@ no GPU, and nothing to install beyond `pip install -r requirements.txt`.
 ## What it does
 
 **Kiosk** (`/`, no login)
-- Live camera preview, wall clock, and a large Scan button.
-- Automatic direction: your scan records the opposite of your last entry, so
-  nobody has to remember which button to press. Explicit **Clock in** /
-  **Clock out** buttons are there when needed.
+- **Hands-free by default**: walk up, and you are clocked in or out with no
+  button press. See [Hands-free clocking](#hands-free-clocking) below.
+- Live camera preview, wall clock, and a large Scan button as a fallback.
+- Automatic direction: a scan records the opposite of your last entry, so nobody
+  has to remember which button to press. Explicit **Clock in** / **Clock out**
+  buttons are there when needed, and override the hands-free interval.
 - Repeat scans inside a cooldown window say "already clocked in" instead of
   writing a second row.
 - Shows a count of who is on site.
 - Space or Enter also triggers a scan, so a cheap USB footswitch wired as a
-  keyboard works as the trigger.
+  keyboard works as the trigger. Escape cancels a pending automatic entry.
 
 **Office** (`/admin`, login required)
 - Employees: add, edit, search, deactivate.
@@ -139,6 +141,82 @@ checked against a real server, and `tests/test_config.py` guards it.
 
 ---
 
+## Hands-free clocking
+
+By default nobody touches anything: the kiosk notices somebody arrive,
+recognises them, and records the entry.
+
+```
+somebody arrives          recognised                countdown ends
+      │                       │                           │
+      ▼                       ▼                           ▼
+   LOOKING ──────────▶  "Sam Fletcher                 entry written
+ (presence seen)         Clocking IN  4"              to the database
+                          [ Cancel ]
+                              │
+                     walk away / press Cancel
+                              │
+                              ▼
+                       nothing recorded
+```
+
+### Why there is a countdown
+
+The obvious design — recognise a face, write the row — has a nasty failure mode.
+Walk past the kiosk two hours into your shift and it would clock you *out*,
+quietly losing the rest of your day's pay. Three things prevent that:
+
+1. **Nothing is written until the countdown finishes.** Recognition and
+   recording are separate steps (`/identify` then `/commit`). Walking away, or
+   pressing **Cancel** or Escape, means no entry ever existed — there is nothing
+   to undo and nothing for the office to correct.
+2. **`AUTO_MIN_INTERVAL_SECONDS`** (default 10 minutes) is the minimum gap
+   between two *automatic* entries for one person. Inside that window the screen
+   says "Already clocked in, Sam" and offers no entry at all. Raise it towards a
+   shift length if people pass the kiosk regularly.
+3. **A button press always wins.** If you genuinely arrive and leave straight
+   away, press **Clock out** — a pressed button states intent, so it overrides
+   the interval.
+
+Automatic entries are stored with `method = "auto"`, so a payroll query can tell
+them from a deliberate scan (`face`) or an office correction (`manual`).
+
+### Bystanders
+
+A shop floor is busy, and refusing every frame containing two faces would make
+hands-free clocking unusable. Instead the nearest face wins, provided it is at
+least `FACE_DOMINANT_RATIO` (default 1.35) times wider than the next — somebody
+clearly closest to the camera is the person using the kiosk. If two people are
+equally close, nobody is clearly "at" the kiosk, so it refuses and asks them to
+step up one at a time rather than guessing.
+
+The stricter one-person-only rule still applies to button presses.
+
+### It does not run recognition all day
+
+Face recognition on every frame, all day, for an empty doorway would be a waste
+of the machine. So the browser answers the cheap question first — "has anybody
+arrived?" — by comparing a small greyscale frame against a reference image of
+the empty scene, and only then asks the server the expensive question, "who is
+this?".
+
+Comparing against the *empty scene* rather than the previous frame is deliberate:
+somebody standing still, waiting to be clocked, produces almost no frame-to-frame
+change but a large difference from the empty doorway — and that is exactly the
+person we must not miss. The reference is re-learned whenever the scene reads as
+empty, so daylight changing through the workshop windows does not slowly become
+a permanent false trigger.
+
+If the kiosk keeps waking at shadows or passing forklifts, raise
+`AUTO_PRESENCE_THRESHOLD`. If it ignores people who approach slowly, lower it.
+
+### Turning it off
+
+Set `KIOSK_AUTO_MODE=false` and the kiosk reverts to press-to-scan. The badge at
+the top of the kiosk screen always shows which mode is active.
+
+---
+
 ## Important: the camera needs a secure origin
 
 Browsers only grant camera access on a *secure origin*. In practice:
@@ -175,6 +253,11 @@ anything.
 | `SCAN_FRAMES` / `SCAN_MIN_AGREE` | `3` / `2` | Frames captured per scan, and how many must name the same person. Requiring agreement stops one unlucky frame writing the wrong name into the log. |
 | `CLOCK_COOLDOWN_SECONDS` | `90` | Repeat scans in the same direction inside this window are reported, not recorded again. |
 | `LIVENESS_REQUIRE_MOTION` | `true` | See the honest assessment below. |
+| `KIOSK_AUTO_MODE` | `true` | Hands-free clocking. `false` reverts to press-to-scan. |
+| `AUTO_CONFIRM_SECONDS` | `4` | Cancellable countdown before an automatic entry is written. `0` records instantly. |
+| `AUTO_MIN_INTERVAL_SECONDS` | `600` | Minimum gap between automatic entries for one person. The main guard against being clocked out while walking past. |
+| `AUTO_PRESENCE_THRESHOLD` | `7.0` | How much the scene must change to count as somebody arriving. Raise if it wakes at shadows. |
+| `FACE_DOMINANT_RATIO` | `1.35` | How much nearer the kiosk user must be than a bystander behind them. |
 | `TIMEZONE` | `Europe/London` | Used for day boundaries and all displayed times. |
 
 For good recognition, enrol people **at the kiosk, under the kiosk's lighting**,
@@ -239,12 +322,30 @@ deactivating an employee drops them from the recognition index.
 python -m pytest
 ```
 
-98 tests, no MySQL needed — the suite runs against SQLite in memory. With face
-photos added (see below) that becomes 104.
+129 tests, no MySQL needed — the suite runs against SQLite in memory. With face
+photos added (see below) that becomes 137.
+
+### The kiosk JavaScript
+
+The hands-free countdown lives in browser code, so `tests/js/kiosk_harness.js`
+stubs the DOM, camera and network and drives the real `kiosk.js` with fake
+timers, checking that an empty doorway produces no requests, that nothing is
+committed while the countdown runs, that letting it finish commits exactly once,
+and that **Cancel prevents the commit**. `pytest` runs it automatically when
+Node is installed, and skips it otherwise. To run it directly:
+
+```bash
+node tests/js/kiosk_harness.js
+```
+
+It earned its keep immediately: it caught the recognition poll timer not being
+stopped when a countdown began, which meant that once the screen returned to
+idle the stale poll kept calling `/identify` with nobody in front of the camera
+and started a fresh countdown that then committed an entry.
 
 ### Checking accuracy with your own photos
 
-Six tests are skipped by default because they need real faces, which cannot be
+Eight tests are skipped by default because they need real faces, which cannot be
 committed to a repository. To enable them, drop a few photos into
 `tests/fixtures/faces/`:
 
@@ -279,16 +380,28 @@ it is the closest thing to a site acceptance test.
 ```
 Browser (kiosk)                  Flask                        MySQL
 --------------                   -----                        -----
-capture 3 frames  ──POST──▶  blueprints/kiosk.py
-                              └▶ services/recognition.scan()
-                                  ├▶ face/engine.py    YuNet detect
-                                  │                    SFace embed (128 floats)
-                                  ├▶ face/liveness.py  frames must differ
-                                  └▶ face/matcher.py   cosine vs every template
-                                 services/attendance.py
-                                  └▶ alternate direction, apply cooldown  ──▶ attendance_event
-                     ◀──JSON──  name, direction, time
+presence check                                               (nothing yet)
+ (browser only, cheap)
+      │ somebody there
+      ▼
+capture 3 frames  ──POST /identify─▶  blueprints/kiosk.py
+                                       └▶ services/recognition.scan()
+                                           ├▶ face/engine.py    YuNet detect
+                                           │                    SFace embed (128 floats)
+                                           ├▶ face/liveness.py  frames must differ
+                                           └▶ face/matcher.py   cosine vs every template
+                  ◀──JSON────────────  who, direction, signed token
+      │
+      │ countdown; Cancel stops here
+      ▼
+     ──POST /commit────────────────▶  verify signature
+                                       services/attendance.py
+                                        └▶ apply interval  ──────────▶ attendance_event
+                  ◀──JSON────────────  name, direction, time
 ```
+
+The button path (`/scan`) collapses both steps into one request, because a press
+already states intent.
 
 | Path | Purpose |
 |---|---|
@@ -349,6 +462,9 @@ mysqldump -u clocking -p clocking > clocking-backup.sql
 | Symptom | Cause and fix |
 |---|---|
 | "Camera unavailable" on the kiosk | Not a secure origin. Use `localhost` or put HTTPS in front — see above. |
+| Kiosk clocks people out as they walk past | Raise `AUTO_MIN_INTERVAL_SECONDS`, or move the camera so it only sees people who stop at it. |
+| Kiosk keeps waking with nobody there | Raise `AUTO_PRESENCE_THRESHOLD`. |
+| Hands-free never triggers | Lower `AUTO_PRESENCE_THRESHOLD`; check the mode badge says "Automatic"; check **Camera check** sees a face. |
 | "Face recognition is not set up on this server" | Run `python scripts/fetch_models.py`. |
 | "Face not recognised" for a known employee | Re-enrol at the kiosk under kiosk lighting. Check Camera check readings; consider lowering `FACE_MATCH_THRESHOLD` slightly. |
 | "Could not tell you apart from another record" | Two enrolments are too similar — often the same person enrolled twice. Check the employee list, remove the duplicate. |

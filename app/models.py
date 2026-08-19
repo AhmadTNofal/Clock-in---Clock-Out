@@ -37,6 +37,9 @@ DIRECTION_OUT = "out"
 DIRECTIONS = (DIRECTION_IN, DIRECTION_OUT)
 
 METHOD_FACE = "face"
+# Recorded hands-free, with no button press. Kept distinct from METHOD_FACE so a
+# payroll query can tell a deliberate scan from an automatic one.
+METHOD_AUTO = "auto"
 METHOD_MANUAL = "manual"
 
 

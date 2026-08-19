@@ -231,11 +231,26 @@ class FaceEngine:
         *,
         allow_multiple: bool = False,
         check_quality: bool = True,
+        dominant_ratio: float | None = None,
     ) -> FaceObservation:
         """Detect, quality-check and embed the most prominent face in *image*.
 
         Raises a :class:`FaceError` subclass describing what went wrong, so the
         caller can tell the user "come closer" rather than a generic failure.
+
+        When several faces are in view the behaviour depends on the caller:
+
+        * default - refuse, because a press-to-scan kiosk should handle one
+          person at a time;
+        * *dominant_ratio* set - accept the nearest face provided it is at least
+          that many times wider than the next one. On a shop floor somebody is
+          usually walking past behind whoever is at the kiosk, and refusing
+          every such frame would make hands-free clocking unusable. A face
+          clearly closer to the camera is the person standing at it. If two
+          faces are of similar size, nobody is clearly "at" the kiosk, so it
+          still refuses rather than guessing;
+        * *allow_multiple* - take the highest-confidence face and do not
+          compare sizes (used by the camera diagnostics page).
         """
         prepared = fit_to_max_side(image, self.settings.max_side)
 
@@ -243,7 +258,17 @@ class FaceEngine:
             rows = self._detect_rows(prepared)
             if len(rows) == 0:
                 raise NoFaceFound("No face was found. Please face the camera.")
-            if len(rows) > 1 and not allow_multiple:
+
+            if len(rows) > 1 and dominant_ratio is not None:
+                # Widest box == nearest to the camera.
+                by_width = rows[np.argsort(-rows[:, 2])]
+                widest, runner_up = float(by_width[0][2]), float(by_width[1][2])
+                if runner_up > 0 and widest < runner_up * dominant_ratio:
+                    raise MultipleFacesFound(
+                        "More than one person is in view. Please step up one at a time."
+                    )
+                rows = by_width
+            elif len(rows) > 1 and not allow_multiple:
                 raise MultipleFacesFound(
                     "More than one face is in view. Please step up one at a time."
                 )

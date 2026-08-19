@@ -219,3 +219,82 @@ def test_a_photo_held_up_to_the_camera_is_refused(logged_in, db, fixture_people,
     assert result["ok"] is False
     assert result["code"] == "liveness_no_motion"
     assert db.session.query(AttendanceEvent).count() == 0
+
+
+@needs_models
+def test_hands_free_identify_then_commit_with_real_models(logged_in, db, app, fixture_people):
+    """The full hands-free path, nothing stubbed except the camera."""
+    first, _ = fixture_people
+    client = logged_in
+
+    client.post(
+        "/admin/employees/new",
+        data={"payroll_ref": "E500", "first_name": "Mia", "last_name": "Ford", "is_active": "y"},
+    )
+    employee = db.session.query(Employee).filter_by(payroll_ref="E500").one()
+    enrol = client.post(
+        f"/admin/employees/{employee.id}/enrol",
+        json={"frames": [_data_url(_vary(first[0], i)) for i in range(3)] + [_data_url(first[1])]},
+    ).get_json()
+    assert enrol["ok"] is True, enrol
+
+    frames = [_data_url(first[0]), _data_url(first[1])]
+
+    # Identify: recognises, writes nothing.
+    identified = client.post(
+        "/api/kiosk/identify", json={"frames": frames}, headers={"X-Kiosk-Token": TOKEN}
+    ).get_json()
+    assert identified["ok"] is True, identified
+    assert identified["code"] == "pending"
+    assert identified["employee"]["payroll_ref"] == "E500"
+    assert identified["direction"] == "in"
+    assert db.session.query(AttendanceEvent).count() == 0
+
+    # Commit: now it exists.
+    committed = client.post(
+        "/api/kiosk/commit",
+        json={"confirm_token": identified["confirm_token"]},
+        headers={"X-Kiosk-Token": TOKEN},
+    ).get_json()
+    assert committed["ok"] is True
+    assert committed["recorded"] is True
+    event = db.session.query(AttendanceEvent).one()
+    assert event.direction == "in"
+    assert event.method == "auto"
+
+    # Standing there a moment longer must not clock them out again.
+    again = client.post(
+        "/api/kiosk/identify", json={"frames": frames}, headers={"X-Kiosk-Token": TOKEN}
+    ).get_json()
+    assert again["code"] == "already_clocked"
+    assert db.session.query(AttendanceEvent).count() == 1
+
+
+@needs_models
+def test_hands_free_ignores_an_unknown_person(logged_in, db, fixture_people):
+    """A visitor walking past must not produce a pending clock-in."""
+    first, second = fixture_people
+    if not second:
+        pytest.skip("Needs photos of a second person in tests/fixtures/faces/.")
+    client = logged_in
+
+    client.post(
+        "/admin/employees/new",
+        data={"payroll_ref": "E600", "first_name": "Kai", "last_name": "Webb", "is_active": "y"},
+    )
+    employee = db.session.query(Employee).filter_by(payroll_ref="E600").one()
+    client.post(
+        f"/admin/employees/{employee.id}/enrol",
+        json={"frames": [_data_url(_vary(first[0], i)) for i in range(3)] + [_data_url(first[1])]},
+    )
+
+    result = client.post(
+        "/api/kiosk/identify",
+        json={"frames": [_data_url(second[0]), _data_url(_vary(second[0], 2))]},
+        headers={"X-Kiosk-Token": TOKEN},
+    ).get_json()
+
+    assert result["ok"] is False
+    assert result["code"] in {"not_recognised", "ambiguous"}
+    assert "confirm_token" not in result
+    assert db.session.query(AttendanceEvent).count() == 0

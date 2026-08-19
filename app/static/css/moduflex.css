@@ -583,6 +583,20 @@ body.mf-kiosk {
     cursor: wait;
 }
 
+/* Cancel stops a pending automatic entry. Sized like the Scan button so it can
+   be hit quickly, and coloured to read as "stop" across the workshop. */
+.mf-cancel-btn {
+    background: var(--mf-red);
+}
+
+.mf-cancel-btn:hover {
+    background: #922019;
+}
+
+.mf-cancel-btn[hidden] {
+    display: none;
+}
+
 .mf-scan-split {
     display: grid;
     grid-template-columns: 1fr 1fr;

@@ -130,6 +130,88 @@
         return next(count);
     };
 
+    /* --- Presence detection -------------------------------------------------
+     *
+     * Hands-free mode must not run face recognition flat out all day: that is
+     * 38 MB of model inference per frame, for an empty doorway. So the browser
+     * answers the cheap question first - "has somebody arrived?" - and only then
+     * asks the server the expensive one, "who is it?".
+     *
+     * The measure is the mean grey-level difference between a small greyscale
+     * frame and a reference image of the empty scene. Comparing against a
+     * *reference* rather than the previous frame matters: somebody standing
+     * still produces almost no frame-to-frame change but a large difference
+     * from the empty doorway, and it is exactly the person standing still,
+     * waiting to be clocked, that we must not miss.
+     *
+     * The reference is re-learned whenever the scene reads as empty, so the
+     * daylight changing through the workshop windows does not slowly turn into
+     * a permanent false positive.
+     */
+    function PresenceDetector(capture, options) {
+        options = options || {};
+        this.capture = capture;
+        this.threshold = options.threshold || 7.0;
+        this.width = 64;
+        this.height = 48;
+        this.reference = null;
+        this.canvas = document.createElement("canvas");
+        this.canvas.width = this.width;
+        this.canvas.height = this.height;
+    }
+
+    PresenceDetector.prototype._grey = function () {
+        var video = this.capture.video;
+        if (!video.videoWidth) {
+            return null;
+        }
+        var ctx = this.canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(video, 0, 0, this.width, this.height);
+        var data = ctx.getImageData(0, 0, this.width, this.height).data;
+        var grey = new Float32Array(this.width * this.height);
+        for (var i = 0, p = 0; i < data.length; i += 4, p += 1) {
+            /* Rec. 601 luma - matches how OpenCV converts to grey. */
+            grey[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        }
+        return grey;
+    };
+
+    /* Returns the mean absolute difference from the empty-scene reference. */
+    PresenceDetector.prototype.measure = function () {
+        var grey = this._grey();
+        if (!grey) {
+            return 0;
+        }
+        if (!this.reference) {
+            this.reference = grey;
+            return 0;
+        }
+        var total = 0;
+        for (var i = 0; i < grey.length; i += 1) {
+            total += Math.abs(grey[i] - this.reference[i]);
+        }
+        var score = total / grey.length;
+
+        if (score < this.threshold) {
+            /* Scene reads as empty: drift the reference towards it so gradual
+             * lighting changes are absorbed rather than accumulating. */
+            for (var j = 0; j < grey.length; j += 1) {
+                this.reference[j] = this.reference[j] * 0.9 + grey[j] * 0.1;
+            }
+        }
+        return score;
+    };
+
+    PresenceDetector.prototype.isPresent = function () {
+        return this.measure() >= this.threshold;
+    };
+
+    /* Forget the learned background - used after a result is shown, so the next
+     * person is measured against the empty scene rather than their predecessor. */
+    PresenceDetector.prototype.reset = function () {
+        this.reference = null;
+    };
+
     function postJson(url, body, extraHeaders) {
         var headers = { "Content-Type": "application/json" };
         Object.keys(extraHeaders || {}).forEach(function (key) {
@@ -154,5 +236,6 @@
     }
 
     global.FaceCapture = FaceCapture;
+    global.PresenceDetector = PresenceDetector;
     global.postJson = postJson;
 })(window);
