@@ -35,6 +35,7 @@
     var clockEl = document.getElementById("kiosk-clock");
     var dateEl = document.getElementById("kiosk-date");
     var modeEl = document.getElementById("kiosk-mode");
+    var debugEl = document.getElementById("kiosk-debug");
 
     var capture = new window.FaceCapture(video, { maxWidth: config.captureMaxWidth });
     var presence = new window.PresenceDetector(capture, {
@@ -63,6 +64,7 @@
      * arrive, and not clocked again until you have been away. */
     var awaitingDeparture = false;
     var absentSince = 0;
+    var latchedAt = 0;
 
     var RESULT_SECONDS = 6;
     /* Kept in step with the server's interval so the kiosk never starts a
@@ -77,9 +79,15 @@
     var FRAME_GAP_MS = config.frameGapMs || 300;
     var REQUIRE_DEPARTURE = config.requireDeparture !== false;
     var DEPARTURE_MS = config.departureMs || 900;
+    /* Backstop for the case where the camera can never see an empty scene - a
+     * kiosk facing a desk, or a doorway that is never clear. Without it,
+     * departure gating fails closed: clocks once, then nothing, with no
+     * explanation. 0 disables the fallback. */
+    var REARM_MS = (config.rearmSeconds === 0 ? 0 : (config.rearmSeconds || 30)) * 1000;
 
     var missStreak = 0;
     var MISS_HINT_AFTER = 3;
+    var lastRearmReason = "start";
 
     /* Turn a refusal code into something the person can act on. */
     function missHint(code) {
@@ -102,6 +110,38 @@
             return "Face recognition is not set up — please see the office";
         }
         return "Face the camera, or use the buttons";
+    }
+
+    /* --- Diagnostics (?debug=1) ------------------------------------------ */
+    var lastScore = 0;
+    var lastCode = "-";
+
+    function paintDebug() {
+        if (!config.debug || !debugEl) {
+            return;
+        }
+        var latch = awaitingDeparture
+            ? "LATCHED (" +
+              (REARM_MS
+                  ? Math.max(0, Math.ceil((REARM_MS - (Date.now() - latchedAt)) / 1000)) +
+                    "s to auto re-arm"
+                  : "departure only") +
+              ")"
+            : "armed";
+        debugEl.textContent = [
+            "state        " + state,
+            "presence     " +
+                lastScore.toFixed(2) +
+                "  (threshold " +
+                config.presenceThreshold +
+                " -> " +
+                (lastScore >= config.presenceThreshold ? "SOMEBODY THERE" : "empty") +
+                ")",
+            "clocking     " + latch + "  [last re-arm: " + lastRearmReason + "]",
+            "last reply   " + lastCode,
+            "misses       " + missStreak,
+            "busy         " + busy
+        ].join("\n");
     }
 
     /* --- Wall clock ----------------------------------------------------- */
@@ -157,6 +197,7 @@
         if (REQUIRE_DEPARTURE) {
             awaitingDeparture = true;
             absentSince = 0;
+            latchedAt = Date.now();
         }
         /* Stop polling for a face while the result is on screen. Leaving this
          * timer running was a bug: once the screen returned to idle the stale
@@ -303,6 +344,7 @@
                 if (!data) {
                     return;
                 }
+                lastCode = data.code || (data.ok ? "ok" : "?");
                 if (!data.ok) {
                     if (data.code === "rate_limited") {
                         /* Stop hammering; the kiosk is polling too fast. */
@@ -447,7 +489,9 @@
         /* Measure every tick, even mid-countdown: that is how a departure gets
          * noticed promptly rather than only once the screen returns to idle. */
         var score = presence.measure();
+        lastScore = score;
         var somebodyThere = score >= config.presenceThreshold;
+        paintDebug();
 
         if (!somebodyThere) {
             if (!absentSince) {
@@ -455,11 +499,16 @@
             } else if (awaitingDeparture && Date.now() - absentSince >= DEPARTURE_MS) {
                 /* They have gone. The next arrival is a fresh clocking, which is
                  * what turns "clocked in" into "clocked out" next time. */
-                awaitingDeparture = false;
-                lastPersonId = null;
+                rearm("departed");
             }
         } else {
             absentSince = 0;
+        }
+
+        /* Never stay latched for ever. If the camera cannot tell us the scene is
+         * empty, time gets us moving again rather than failing silently. */
+        if (awaitingDeparture && REARM_MS > 0 && Date.now() - latchedAt >= REARM_MS) {
+            rearm("timeout");
         }
 
         if (state !== STATE.IDLE && state !== STATE.LOOKING) {
@@ -468,7 +517,14 @@
 
         if (awaitingDeparture) {
             if (somebodyThere) {
-                hint.textContent = "All set — step away from the camera";
+                var waitLeft = REARM_MS
+                    ? Math.ceil((REARM_MS - (Date.now() - latchedAt)) / 1000)
+                    : 0;
+                hint.textContent =
+                    waitLeft > 0
+                        ? "All set — step away from the camera (ready again in " +
+                          waitLeft + "s)"
+                        : "All set — step away from the camera";
             }
             return;
         }
@@ -487,6 +543,13 @@
             stopLooking();
             showIdle();
         }
+    }
+
+    /* Allow automatic clocking again. */
+    function rearm(why) {
+        awaitingDeparture = false;
+        lastPersonId = null;
+        lastRearmReason = why;
     }
 
     function stopLooking() {
@@ -532,6 +595,11 @@
             showIdle();
             refreshOnsite();
             window.setInterval(refreshOnsite, 60000);
+
+            if (config.debug && debugEl) {
+                debugEl.hidden = false;
+                window.setInterval(paintDebug, 400);
+            }
 
             if (config.autoMode) {
                 modeEl.textContent = "Automatic";

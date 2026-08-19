@@ -122,6 +122,20 @@ class Config:
     # not to be triggered by somebody shifting their weight, short enough that
     # stepping aside and back is not a chore.
     AUTO_DEPARTURE_MS = _int("AUTO_DEPARTURE_MS", 900)
+    # Re-arm anyway after this many seconds, even if the camera never reports an
+    # empty scene.
+    #
+    # Departure gating on its own has a hard failure mode: if the camera can
+    # always see somebody - a kiosk facing a desk, a busy doorway that is never
+    # empty, or a presence threshold set too low - it clocks once and then never
+    # again, with no indication why. This fallback guarantees the kiosk always
+    # comes back to life.
+    #
+    # The trade-off runs the other way: somebody permanently in view will be
+    # offered a clock every AUTO_REARM_SECONDS, so keep it long enough that the
+    # countdown is a real chance to cancel. Set 0 to disable the fallback and
+    # rely on departure alone.
+    AUTO_REARM_SECONDS = _int("AUTO_REARM_SECONDS", 30)
     # How often the kiosk runs recognition once it thinks somebody is there.
     AUTO_POLL_MS = _int("AUTO_POLL_MS", 600)
     # How often it checks whether anybody has arrived (browser-side, cheap).

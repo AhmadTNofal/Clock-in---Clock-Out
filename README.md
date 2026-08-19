@@ -197,6 +197,21 @@ kiosk, or a camera that cannot distinguish an empty doorway. Keep it short: a lo
 value goes back to blocking genuine clocking out. The test suite fails if it is
 set above 30 s.
 
+#### If the camera never sees an empty scene
+
+Departure gating on its own fails closed. Point the kiosk at a desk you sit at, or
+a doorway that is never clear, and the scene never reads empty — so the kiosk
+clocks you once and then never again. That is a real trap, and it is why
+`AUTO_REARM_SECONDS` (default 30) exists: the kiosk re-arms after that long
+regardless, and the screen counts it down ("All set — step away from the camera
+(ready again in 12s)") so the wait is never a mystery.
+
+Departure remains the fast path — walk away and it re-arms in about a second. The
+timer is only there so it can never get stuck. The trade-off runs the other way:
+somebody permanently in view is offered a clock every `AUTO_REARM_SECONDS`, with
+the countdown as the guard, so do not set it very low. `0` disables the fallback
+and relies on departure alone.
+
 ### Why there is a countdown
 
 The obvious design — recognise a face, write the row immediately — has a nasty
@@ -263,6 +278,15 @@ camera actually delivers more than 720p (`CAPTURE_MAX_WIDTH` cannot invent
 detail), raise `CAPTURE_MAX_WIDTH` and `FACE_DETECT_MAX_SIDE` together to 1280,
 then lower `FACE_MIN_PIXELS` towards 45. Use **Camera check** to see the real
 face-pixel figures at the distance people actually stand.
+
+### Seeing what the kiosk is thinking
+
+Open the kiosk with `?debug=1` — for example `http://localhost:8000/?debug=1` — and
+it overlays its live state: the presence score against the threshold, whether it is
+armed or latched (and how long until it re-arms), the last reply from the server,
+and the miss count. Tuning `AUTO_PRESENCE_THRESHOLD` by guesswork is miserable;
+this shows the number you are trying to set. It is off unless asked for, so the
+shop-floor screen stays clean.
 
 ### When it cannot recognise somebody
 
@@ -348,6 +372,7 @@ anything.
 | `AUTO_CONFIRM_SECONDS` | `2` | Cancellable countdown before an automatic entry is written. `0` records instantly (not advised — it removes the only guard against being clocked out in passing). |
 | `AUTO_REQUIRE_DEPARTURE` | `true` | Require the person to leave the camera's view before they can be clocked again. This is what makes the kiosk a toggle. |
 | `AUTO_DEPARTURE_MS` | `900` | How long the scene must read empty to count as having left. |
+| `AUTO_REARM_SECONDS` | `30` | Re-arm after this long even if the scene never reads empty. Stops the kiosk getting permanently stuck when the camera can always see somebody. `0` disables it. |
 | `AUTO_MIN_INTERVAL_SECONDS` | `10` | Backstop only, for when the departure check cannot be trusted. Keep it short — a long value blocks genuine clocking out. |
 | `AUTO_PRESENCE_THRESHOLD` | `7.0` | How much the scene must change to count as somebody arriving. Raise if it wakes at shadows. |
 | `FACE_DOMINANT_RATIO` | `1.35` | How much nearer the kiosk user must be than a bystander behind them. |
@@ -419,8 +444,8 @@ deactivating an employee drops them from the recognition index.
 python -m pytest
 ```
 
-140 tests, no MySQL needed — the suite runs against SQLite in memory. With face
-photos added (see below) that becomes 148.
+143 tests, no MySQL needed — the suite runs against SQLite in memory. With face
+photos added (see below) that becomes 151.
 
 ### The kiosk JavaScript
 
@@ -429,7 +454,8 @@ stubs the DOM, camera and network and drives the real `kiosk.js` with fake
 timers, checking that an empty doorway produces no requests, that nothing is
 committed while the countdown runs, that letting it finish commits exactly once,
 that **Cancel prevents the commit**, that standing still does not clock you
-repeatedly while leaving and returning does, and that repeated misses produce an
+repeatedly while leaving and returning does, that a camera which never sees an
+empty scene still recovers, and that repeated misses produce an
 actionable hint. `pytest` runs it automatically when
 Node is installed, and skips it otherwise. To run it directly:
 
@@ -568,6 +594,7 @@ mysqldump -u clocking -p clocking > clocking-backup.sql
 | Live people rejected as photographs | The liveness gap is too short or the camera too noisy. Raise `AUTO_FRAME_GAP_MS`, or lower `LIVENESS_MIN_MOTION` (weakens photo protection). |
 | Clocked in but wanted to stay in | Press **Cancel** during the countdown. |
 | Screen says "step away from the camera" | Working as intended — you have been clocked, and it will not clock you again until you have left the view. |
+| Clocks once, then never again | The camera can always see somebody, so the departure check never clears. It now frees itself after `AUTO_REARM_SECONDS`; open the kiosk with `?debug=1` to watch the presence score and latch state live. Move the camera so it sees an empty scene, or raise `AUTO_PRESENCE_THRESHOLD`. |
 | Will not clock me out when I come back | The kiosk has not seen the doorway empty. Check **Camera check**: the presence score must drop below the threshold when nobody is there. Lower `AUTO_DEPARTURE_MS` or raise `AUTO_PRESENCE_THRESHOLD`. |
 | "Face recognition is not set up on this server" | Run `python scripts/fetch_models.py`. |
 | "Face not recognised" for a known employee | Re-enrol at the kiosk under kiosk lighting. Check Camera check readings; consider lowering `FACE_MATCH_THRESHOLD` slightly. |

@@ -488,6 +488,7 @@ def test_shipped_env_example_matches_the_code_defaults():
         "AUTO_POLL_MS",
         "AUTO_PRESENCE_MS",
         "AUTO_DEPARTURE_MS",
+        "AUTO_REARM_SECONDS",
     ):
         assert key in settings, f"{key} is missing from .env.example"
         if settings[key] == "":
@@ -572,3 +573,32 @@ def test_departure_gating_is_on_by_default(app):
     assert app.config["AUTO_DEPARTURE_MS"] >= 300, (
         "too short and somebody shifting their weight counts as leaving"
     )
+
+
+def test_rearm_fallback_is_configured(app):
+    """Departure gating alone fails closed if the camera never sees an empty scene.
+
+    Reported symptom: the kiosk clocked once and then never again, with nothing
+    on screen to explain why. A camera that can always see somebody - one facing
+    a desk, or a doorway that is never clear - never satisfies the departure
+    check, so there must be a time-based way out.
+    """
+    rearm = app.config["AUTO_REARM_SECONDS"]
+    assert rearm > 0, (
+        "AUTO_REARM_SECONDS=0 relies on departure alone; if the camera never "
+        "reports an empty scene the kiosk stops clocking altogether"
+    )
+    assert rearm >= app.config["AUTO_CONFIRM_SECONDS"] + 5, (
+        "the re-arm window must comfortably outlast the countdown"
+    )
+
+
+def test_rearm_setting_reaches_the_kiosk_page(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "rearmSeconds" in body
+
+
+def test_debug_overlay_is_off_unless_asked_for(client):
+    """Diagnostics must not be on the shop-floor screen by default."""
+    assert "debug: false" in client.get("/").data.decode("utf-8")
+    assert "debug: true" in client.get("/?debug=1").data.decode("utf-8")

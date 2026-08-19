@@ -119,7 +119,7 @@ global.KIOSK_CONFIG = {
   frames: 3, autoMode: true, confirmSeconds: 2, pollMs: 600,
   presenceMs: 200, presenceThreshold: 7.0,
   autoFrames: 2, frameGapMs: 300, minIntervalSeconds: 10, captureMaxWidth: 960,
-  requireDeparture: true, departureMs: 900,
+  requireDeparture: true, departureMs: 900, rearmSeconds: 30,
 };
 eval(fs.readFileSync(path.join(APP, "capture.js"), "utf8"));
 eval(fs.readFileSync(path.join(APP, "kiosk.js"), "utf8"));
@@ -246,8 +246,8 @@ const pendingIn = {
     confirm_seconds: 2, direction: "out",
     employee: { id: 42, name: "Rhys Morgan", first_name: "Rhys" },
   };
-  await advance(20000);                       // a long time, still standing there
-  check("STANDING STILL DOES NOT CLOCK YOU OUT AGAIN",
+  await advance(20000);                       // still standing there, within re-arm
+  check("standing still does not immediately clock you out again",
         commits() === afterIn, `commits=${commits()} (expected ${afterIn})`);
   check("the screen asks them to step away",
         /step away/i.test(els["kiosk-hint"].textContent),
@@ -264,6 +264,35 @@ const pendingIn = {
     "clocked out", () => action().includes("Clocked OUT"), 12000);
   check("COMING BACK CLOCKS YOU OUT", cameBack && commits() === afterIn + 1,
         `commits=${commits()} action="${action()}"`);
+
+  // 9. THE FAILURE THAT WAS REPORTED: a camera that never sees an empty scene
+  //    (a kiosk facing a desk) left the kiosk latched for ever - it clocked once
+  //    and then nothing, with no explanation. The re-arm timer must rescue it.
+  scenePixel = 0;
+  await advance(20000);
+  calls.length = 0;
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-a",
+    confirm_seconds: 2, direction: "in",
+    employee: { id: 77, name: "Owen Pryce", first_name: "Owen" },
+  };
+  scenePixel = 215;                           // arrives and NEVER leaves
+  await advanceUntil("first", () => commits() === 1, 12000);
+  check("clocks once while permanently in frame", commits() === 1, `commits=${commits()}`);
+
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-b",
+    confirm_seconds: 2, direction: "out",
+    employee: { id: 77, name: "Owen Pryce", first_name: "Owen" },
+  };
+  // Never absent for a single tick; only the re-arm timeout can free it.
+  const freed = await advanceUntil("second", () => commits() === 2, 60000);
+  check("PERMANENTLY IN FRAME STILL CLOCKS AGAIN (re-arm timeout)",
+        freed && commits() === 2, `commits=${commits()}`);
+  check("the wait is explained on screen while latched",
+        /ready again in/i.test(els["kiosk-hint"].textContent) ||
+          action().includes("Clocked"),
+        `hint="${els["kiosk-hint"].textContent}"`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

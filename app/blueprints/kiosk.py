@@ -66,6 +66,7 @@ def index():
         capture_max_width=current_app.config["CAPTURE_MAX_WIDTH"],
         auto_require_departure=current_app.config["AUTO_REQUIRE_DEPARTURE"],
         auto_departure_ms=current_app.config["AUTO_DEPARTURE_MS"],
+        auto_rearm_seconds=current_app.config["AUTO_REARM_SECONDS"],
     )
 
 

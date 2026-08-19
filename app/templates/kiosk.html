@@ -48,6 +48,11 @@
             </div>
 
             <div class="mf-onsite" id="onsite">&nbsp;</div>
+
+            <!-- Diagnostics, shown only with ?debug=1 on the URL. Tuning a kiosk
+                 by guesswork is miserable; this shows what it is actually
+                 deciding, live. -->
+            <pre class="mf-kiosk-debug" id="kiosk-debug" hidden></pre>
         </div>
     </div>
 </div>
@@ -71,7 +76,9 @@
         minIntervalSeconds: {{ auto_min_interval_seconds | tojson }},
         captureMaxWidth: {{ capture_max_width | tojson }},
         requireDeparture: {{ auto_require_departure | tojson }},
-        departureMs: {{ auto_departure_ms | tojson }}
+        departureMs: {{ auto_departure_ms | tojson }},
+        rearmSeconds: {{ auto_rearm_seconds | tojson }},
+        debug: {{ (request.args.get('debug') == '1') | tojson }}
     };
 </script>
 <script src="{{ url_for('static', filename='js/kiosk.js') }}"></script>

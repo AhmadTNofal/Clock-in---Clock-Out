@@ -618,6 +618,25 @@ body.mf-kiosk {
     background: var(--mf-blue-700);
 }
 
+/* Diagnostics overlay (?debug=1 on the kiosk URL). */
+.mf-kiosk-debug {
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    color: var(--mf-blue-100);
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--mf-blue-500);
+    border-radius: var(--mf-radius);
+    white-space: pre;
+    overflow-x: auto;
+}
+
+.mf-kiosk-debug[hidden] {
+    display: none;
+}
+
 .mf-onsite {
     font-size: 0.95rem;
     color: var(--mf-blue-100);
