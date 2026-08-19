@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Employees &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Employees</h1>
+<p class="mf-subtitle">{{ employees | length }} record(s)</p>
+
+<div class="mf-card">
+    <form method="get" class="mf-filter-row">
+        <div class="mf-field">
+            <label for="q">Search</label>
+            <input type="text" id="q" name="q" value="{{ query }}" placeholder="Name, payroll ref or department">
+        </div>
+        <button class="mf-btn" type="submit">Search</button>
+        {% if query %}<a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.employees') }}">Clear</a>{% endif %}
+        <a class="mf-btn" href="{{ url_for('admin.employee_new') }}">Add employee</a>
+    </form>
+</div>
+
+{% if employees %}
+<div class="mf-table-wrap">
+    <table class="mf-table">
+        <thead>
+            <tr>
+                <th>Payroll ref</th>
+                <th>Name</th>
+                <th>Department</th>
+                <th>Status</th>
+                <th>Face enrolled</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for employee in employees %}
+            <tr>
+                <td>{{ employee.payroll_ref }}</td>
+                <td><a href="{{ url_for('admin.employee_detail', employee_id=employee.id) }}">{{ employee.full_name }}</a></td>
+                <td>{{ employee.department or '' }}</td>
+                <td>
+                    {% if employee.is_active %}
+                    <span class="mf-badge mf-badge-in">Active</span>
+                    {% else %}
+                    <span class="mf-badge">Inactive</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if employee.is_enrolled %}
+                    <span class="mf-badge mf-badge-out">{{ employee.templates | length }} sample(s)</span>
+                    {% else %}
+                    <span class="mf-badge mf-badge-warn">Not enrolled</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="{{ url_for('admin.employee_enrol', employee_id=employee.id) }}">Enrol</a>
+                    &middot;
+                    <a href="{{ url_for('admin.employee_edit', employee_id=employee.id) }}">Edit</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="mf-card">
+    <p class="mf-empty">No employees found. <a href="{{ url_for('admin.employee_new') }}">Add the first one</a>.</p>
+</div>
+{% endif %}
+{% endblock %}

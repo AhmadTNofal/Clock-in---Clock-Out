@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Camera check &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Camera check</h1>
+<p class="mf-subtitle">Measures what this camera and lighting actually produce. Nothing is
+    recorded and no attendance entry is created.</p>
+
+<div class="mf-card">
+    <div class="mf-capture-layout">
+        <div>
+            <video id="check-video" class="mf-capture-video" playsinline muted autoplay></video>
+            <p class="mf-note" id="check-hint">Starting camera&hellip;</p>
+            <div class="mf-btn-row">
+                <button class="mf-btn" id="measure-btn" type="button" disabled>Measure 3 frames</button>
+            </div>
+        </div>
+
+        <div>
+            <h2 style="margin-top: 0;">Measurements</h2>
+            <ul class="mf-measure-list" id="results">
+                <li><span>Run a measurement to see figures.</span><span></span></li>
+            </ul>
+
+            <h2>Current thresholds</h2>
+            <ul class="mf-measure-list">
+                <li><span>FACE_MIN_PIXELS</span><span>{{ thresholds.min_pixels }}</span></li>
+                <li><span>FACE_MIN_SHARPNESS</span><span>{{ thresholds.min_sharpness }}</span></li>
+                <li><span>FACE_MATCH_THRESHOLD</span><span>{{ thresholds.match_threshold }}</span></li>
+                <li><span>FACE_MATCH_MARGIN</span><span>{{ thresholds.match_margin }}</span></li>
+                <li><span>LIVENESS_MIN_MOTION</span><span>{{ thresholds.min_motion }}</span></li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<div class="mf-card">
+    <h2 style="margin-top: 0;">How to read this</h2>
+    <ul class="mf-note" style="padding-left: 1.2rem;">
+        <li><strong>Face pixels</strong> &mdash; the detected face width. Set
+            <code>FACE_MIN_PIXELS</code> well below what a person standing at the kiosk measures;
+            if it reads under about 80 the camera is too far away or too low-resolution.</li>
+        <li><strong>Sharpness</strong> &mdash; focus measure. Set <code>FACE_MIN_SHARPNESS</code>
+            to roughly half of a good reading, so ordinary movement is not rejected.</li>
+        <li><strong>Motion</strong> &mdash; frame-to-frame change in the face. A live person
+            should comfortably exceed <code>LIVENESS_MIN_MOTION</code>; a photo held up reads
+            close to zero.</li>
+        <li><strong>Consistency</strong> &mdash; how alike the frames are. Should be above about
+            0.8 for one person standing still.</li>
+    </ul>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/capture.js') }}"></script>
+<script>
+    (function () {
+        "use strict";
+        var video = document.getElementById("check-video");
+        var hint = document.getElementById("check-hint");
+        var button = document.getElementById("measure-btn");
+        var results = document.getElementById("results");
+        var capture = new window.FaceCapture(video);
+        var submitUrl = {{ url_for('admin.camera_check_submit') | tojson }};
+        var csrfToken = {{ csrf_token() | tojson }};
+
+        function row(label, value) {
+            return "<li><span>" + label + "</span><span>" + value + "</span></li>";
+        }
+
+        button.addEventListener("click", function () {
+            button.disabled = true;
+            hint.textContent = "Measuring — hold still…";
+
+            capture
+                .grabSeries(3, 340)
+                .then(function (frames) {
+                    return window.postJson(submitUrl, { frames: frames },
+                        { "X-CSRFToken": csrfToken });
+                })
+                .then(function (data) {
+                    if (!data.ok) {
+                        results.innerHTML = row("Result", data.message || "No face measured");
+                        return;
+                    }
+                    var html = "";
+                    html += row("Frames measured", data.frames_measured);
+                    html += row("Face pixels", data.face_pixels.join(", "));
+                    html += row("Sharpness", data.sharpness.join(", "));
+                    html += row("Detector score", data.detector_score.join(", "));
+                    html += row("Motion", data.motion);
+                    html += row("Consistency", data.consistency);
+                    html += row(
+                        "Best match",
+                        data.best_match.employee
+                            ? data.best_match.employee + " (" + data.best_match.score + ")"
+                            : "none (" + data.best_match.reason + ")"
+                    );
+                    if (data.problems && data.problems.length) {
+                        html += row("Problems", data.problems.join("; "));
+                    }
+                    results.innerHTML = html;
+                })
+                .catch(function (error) {
+                    results.innerHTML = row("Error", error.message || "Measurement failed");
+                })
+                .then(function () {
+                    button.disabled = false;
+                    hint.textContent = "Stand as an employee would and measure again.";
+                });
+        });
+
+        capture
+            .start()
+            .then(function () {
+                hint.textContent = "Stand as an employee would, then measure.";
+                button.disabled = false;
+            })
+            .catch(function (error) {
+                hint.textContent = error.message;
+            });
+    })();
+</script>
+{% endblock %}

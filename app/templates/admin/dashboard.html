@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+<p class="mf-subtitle">{{ today.strftime('%A %d %B %Y') }} &middot; times shown in {{ timezone_name }}</p>
+
+<div class="mf-grid">
+    <div class="mf-stat">
+        <div class="mf-stat-value">{{ on_site | length }}</div>
+        <div class="mf-stat-label">On site now</div>
+    </div>
+    <div class="mf-stat">
+        <div class="mf-stat-value">{{ active_count }}</div>
+        <div class="mf-stat-label">Active employees</div>
+    </div>
+    <div class="mf-stat">
+        <div class="mf-stat-value">{{ enrolled_count }}</div>
+        <div class="mf-stat-label">Faces enrolled</div>
+    </div>
+    <div class="mf-stat">
+        <div class="mf-stat-value">{{ index_size }}</div>
+        <div class="mf-stat-label">Templates in index</div>
+    </div>
+</div>
+
+{% if active_count and enrolled_count < active_count %}
+<div class="mf-flash mf-flash-warning">
+    {{ active_count - enrolled_count }} active employee(s) have no face enrolled and cannot
+    use the kiosk. <a href="{{ url_for('admin.employees') }}">Review the list</a>.
+</div>
+{% endif %}
+
+<div class="mf-card">
+    <h2 style="margin-top: 0;">On site now</h2>
+    {% if on_site %}
+    <p>
+        {% for person in on_site %}
+        <span class="mf-badge mf-badge-in">{{ person.full_name }}</span>
+        {% endfor %}
+    </p>
+    <p class="mf-note">Use this as the fire register. It reflects whoever&rsquo;s most recent
+        entry is a clock-in.</p>
+    {% else %}
+    <p class="mf-empty">Nobody is currently clocked in.</p>
+    {% endif %}
+</div>
+
+<div class="mf-card">
+    <h2 style="margin-top: 0;">Latest activity</h2>
+    {% if recent %}
+    <div class="mf-table-wrap">
+        <table class="mf-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Employee</th>
+                    <th>Direction</th>
+                    <th>Method</th>
+                    <th>Confidence</th>
+                    <th>Device</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for event in recent %}
+                <tr>
+                    <td>{{ event.occurred_at | localtime }}</td>
+                    <td><a href="{{ url_for('admin.employee_detail', employee_id=event.employee_id) }}">{{ event.employee.full_name }}</a></td>
+                    <td><span class="mf-badge mf-badge-{{ event.direction }}">{{ 'In' if event.direction == 'in' else 'Out' }}</span></td>
+                    <td>{{ event.method }}</td>
+                    <td>{{ '%.3f' | format(event.confidence) if event.confidence else '&mdash;' | safe }}</td>
+                    <td>{{ event.device_label or '' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="mf-empty">No clocking activity yet.</p>
+    {% endif %}
+</div>
+{% endblock %}

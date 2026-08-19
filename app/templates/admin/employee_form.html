@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if employee else 'Add' }} employee &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>{{ 'Edit ' + employee.full_name if employee else 'Add employee' }}</h1>
+<p class="mf-subtitle">
+    {% if employee %}Payroll reference {{ employee.payroll_ref }}
+    {% else %}Face enrolment is the next step after saving.{% endif %}
+</p>
+
+<div class="mf-card" style="max-width: 34rem;">
+    <form method="post" novalidate>
+        {{ form.csrf_token }}
+
+        {% for field in [form.payroll_ref, form.first_name, form.last_name, form.department, form.email] %}
+        <div class="mf-field">
+            {{ field.label }}
+            {{ field() }}
+            {% for error in field.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+        {% endfor %}
+
+        <div class="mf-field mf-checkbox">
+            {{ form.is_active() }} {{ form.is_active.label }}
+        </div>
+        <p class="mf-note">Inactive employees keep their history but cannot clock in, and their
+            face is dropped from the recognition index.</p>
+
+        <div class="mf-btn-row">
+            <button class="mf-btn" type="submit">Save</button>
+            <a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.employees') }}">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

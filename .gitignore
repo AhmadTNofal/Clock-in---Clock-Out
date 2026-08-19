@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Secrets and local data
+.env
+instance/
+*.log
+
+# Face models (large, fetched with scripts/fetch_models.py)
+models/*.onnx
+models/*.part
+
+# OS / editors
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Test face photos are personal data - keep them local
+tests/fixtures/faces/*.jpg
+tests/fixtures/faces/*.jpeg
+tests/fixtures/faces/*.png
+tests/fixtures/faces/*.bmp

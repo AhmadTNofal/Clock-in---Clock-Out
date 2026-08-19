@@ -1,0 +1,689 @@
+/* ==========================================================================
+   Moduflex house style
+   --------------------------------------------------------------------------
+   Brand blue / grey, Bahnschrift with Arial fallback.
+
+   Every brand value is a custom property in :root, so if the exact corporate
+   hex codes differ from these, changing the six --mf-blue-* / --mf-grey-*
+   values below restyles the whole application.
+   ========================================================================== */
+
+:root {
+    /* Brand blues */
+    --mf-blue-900: #0a2f4f;
+    --mf-blue-700: #0b4f8a;
+    --mf-blue-500: #1573bd;
+    --mf-blue-100: #e3eef7;
+
+    /* Greys */
+    --mf-grey-900: #23282d;
+    --mf-grey-600: #5c666f;
+    --mf-grey-300: #c8ced4;
+    --mf-grey-100: #f1f3f5;
+    --mf-white: #ffffff;
+
+    /* Status */
+    --mf-green: #1c7a4a;
+    --mf-green-100: #e2f2ea;
+    --mf-amber: #9a6300;
+    --mf-amber-100: #fdf2dc;
+    --mf-red: #b3261e;
+    --mf-red-100: #fbe6e5;
+
+    /* Type: Bahnschrift is the Windows condensed grotesque; Arial elsewhere. */
+    --mf-font-head: "Bahnschrift SemiBold", "Bahnschrift", "DIN Alternate",
+        Arial, Helvetica, sans-serif;
+    --mf-font-body: "Bahnschrift Light", "Bahnschrift", Arial, Helvetica, sans-serif;
+
+    --mf-radius: 4px;
+    --mf-shadow: 0 1px 3px rgba(35, 40, 45, 0.16);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: var(--mf-font-body);
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--mf-grey-900);
+    background: var(--mf-grey-100);
+}
+
+h1,
+h2,
+h3,
+th,
+.mf-brand {
+    font-family: var(--mf-font-head);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+h1 {
+    font-size: 1.6rem;
+    margin: 0 0 0.25rem;
+}
+
+h2 {
+    font-size: 1.2rem;
+    margin: 1.5rem 0 0.5rem;
+}
+
+a {
+    color: var(--mf-blue-700);
+}
+
+/* --- Layout ------------------------------------------------------------- */
+.mf-header {
+    background: var(--mf-blue-900);
+    color: var(--mf-white);
+    padding: 0.6rem 1.25rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.mf-brand {
+    font-size: 1.15rem;
+    color: var(--mf-white);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.mf-nav {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    flex: 1;
+}
+
+.mf-nav a {
+    color: var(--mf-blue-100);
+    text-decoration: none;
+    padding: 0.2rem 0;
+    border-bottom: 2px solid transparent;
+}
+
+.mf-nav a:hover,
+.mf-nav a.is-active {
+    color: var(--mf-white);
+    border-bottom-color: var(--mf-blue-500);
+}
+
+.mf-header form {
+    margin: 0;
+}
+
+main {
+    max-width: 1100px;
+    margin: 1.5rem auto;
+    padding: 0 1.25rem 3rem;
+}
+
+.mf-subtitle {
+    color: var(--mf-grey-600);
+    margin: 0 0 1.25rem;
+}
+
+/* --- Cards and grids ---------------------------------------------------- */
+.mf-card {
+    background: var(--mf-white);
+    border: 1px solid var(--mf-grey-300);
+    border-radius: var(--mf-radius);
+    box-shadow: var(--mf-shadow);
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.mf-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+
+.mf-stat {
+    background: var(--mf-white);
+    border: 1px solid var(--mf-grey-300);
+    border-left: 4px solid var(--mf-blue-500);
+    border-radius: var(--mf-radius);
+    padding: 0.9rem 1rem;
+}
+
+.mf-stat .mf-stat-value {
+    font-family: var(--mf-font-head);
+    font-size: 1.9rem;
+    line-height: 1.1;
+    color: var(--mf-blue-900);
+}
+
+.mf-stat .mf-stat-label {
+    color: var(--mf-grey-600);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* --- Tables ------------------------------------------------------------- */
+.mf-table-wrap {
+    overflow-x: auto;
+}
+
+table.mf-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--mf-white);
+    font-size: 0.94rem;
+}
+
+table.mf-table th,
+table.mf-table td {
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid var(--mf-grey-300);
+    white-space: nowrap;
+}
+
+table.mf-table th {
+    background: var(--mf-blue-100);
+    color: var(--mf-blue-900);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+table.mf-table tbody tr:hover {
+    background: var(--mf-grey-100);
+}
+
+table.mf-table td.mf-wrap {
+    white-space: normal;
+}
+
+tr.mf-row-issue td {
+    background: var(--mf-amber-100);
+}
+
+tr.mf-row-void td {
+    color: var(--mf-grey-600);
+    text-decoration: line-through;
+}
+
+tfoot td {
+    font-family: var(--mf-font-head);
+    background: var(--mf-grey-100);
+}
+
+/* --- Forms and buttons -------------------------------------------------- */
+.mf-field {
+    margin-bottom: 0.9rem;
+}
+
+.mf-field label {
+    display: block;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--mf-grey-600);
+    margin-bottom: 0.2rem;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="date"],
+select,
+textarea {
+    width: 100%;
+    max-width: 26rem;
+    font-family: var(--mf-font-body);
+    font-size: 1rem;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--mf-grey-300);
+    border-radius: var(--mf-radius);
+    background: var(--mf-white);
+    color: var(--mf-grey-900);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    outline: 2px solid var(--mf-blue-500);
+    outline-offset: 1px;
+    border-color: var(--mf-blue-500);
+}
+
+.mf-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.mf-checkbox input {
+    width: auto;
+}
+
+.mf-error {
+    color: var(--mf-red);
+    font-size: 0.85rem;
+    margin-top: 0.2rem;
+}
+
+.mf-btn {
+    display: inline-block;
+    font-family: var(--mf-font-head);
+    font-size: 0.95rem;
+    padding: 0.5rem 1.1rem;
+    border: 1px solid var(--mf-blue-700);
+    border-radius: var(--mf-radius);
+    background: var(--mf-blue-700);
+    color: var(--mf-white);
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.mf-btn:hover {
+    background: var(--mf-blue-500);
+    border-color: var(--mf-blue-500);
+}
+
+.mf-btn:disabled {
+    background: var(--mf-grey-300);
+    border-color: var(--mf-grey-300);
+    color: var(--mf-grey-600);
+    cursor: not-allowed;
+}
+
+.mf-btn-secondary {
+    background: var(--mf-white);
+    color: var(--mf-blue-700);
+}
+
+.mf-btn-secondary:hover {
+    background: var(--mf-blue-100);
+    color: var(--mf-blue-900);
+}
+
+.mf-btn-danger {
+    background: var(--mf-red);
+    border-color: var(--mf-red);
+}
+
+.mf-btn-danger:hover {
+    background: #922019;
+    border-color: #922019;
+}
+
+.mf-btn-row {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-top: 0.5rem;
+}
+
+.mf-filter-row {
+    display: flex;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    align-items: flex-end;
+}
+
+.mf-filter-row .mf-field {
+    margin-bottom: 0;
+}
+
+.mf-filter-row input,
+.mf-filter-row select {
+    max-width: 14rem;
+}
+
+/* --- Badges and flashes ------------------------------------------------- */
+.mf-badge {
+    display: inline-block;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.12rem 0.5rem;
+    border-radius: 999px;
+    background: var(--mf-grey-100);
+    color: var(--mf-grey-600);
+    border: 1px solid var(--mf-grey-300);
+}
+
+.mf-badge-in {
+    background: var(--mf-green-100);
+    color: var(--mf-green);
+    border-color: var(--mf-green);
+}
+
+.mf-badge-out {
+    background: var(--mf-blue-100);
+    color: var(--mf-blue-700);
+    border-color: var(--mf-blue-500);
+}
+
+.mf-badge-warn {
+    background: var(--mf-amber-100);
+    color: var(--mf-amber);
+    border-color: var(--mf-amber);
+}
+
+.mf-badge-danger {
+    background: var(--mf-red-100);
+    color: var(--mf-red);
+    border-color: var(--mf-red);
+}
+
+.mf-flash {
+    padding: 0.65rem 0.9rem;
+    border-radius: var(--mf-radius);
+    border-left: 4px solid var(--mf-blue-500);
+    background: var(--mf-blue-100);
+    margin-bottom: 0.75rem;
+}
+
+.mf-flash-success {
+    background: var(--mf-green-100);
+    border-left-color: var(--mf-green);
+}
+
+.mf-flash-error {
+    background: var(--mf-red-100);
+    border-left-color: var(--mf-red);
+}
+
+.mf-flash-warning {
+    background: var(--mf-amber-100);
+    border-left-color: var(--mf-amber);
+}
+
+.mf-note {
+    color: var(--mf-grey-600);
+    font-size: 0.9rem;
+}
+
+.mf-empty {
+    color: var(--mf-grey-600);
+    padding: 1rem 0;
+}
+
+/* ==========================================================================
+   Kiosk: full-screen, high contrast, readable across a workshop
+   ========================================================================== */
+body.mf-kiosk {
+    background: var(--mf-blue-900);
+    color: var(--mf-white);
+    height: 100vh;
+    overflow: hidden;
+}
+
+.mf-kiosk-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 1.1rem 1.5rem 1.5rem;
+}
+
+.mf-kiosk-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.mf-kiosk-top .mf-brand {
+    font-size: 1.4rem;
+}
+
+.mf-kiosk-clock {
+    font-family: var(--mf-font-head);
+    font-size: 2.1rem;
+    line-height: 1;
+}
+
+.mf-kiosk-date {
+    color: var(--mf-blue-100);
+    font-size: 0.95rem;
+}
+
+.mf-kiosk-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(300px, 420px);
+    gap: 1.5rem;
+    align-items: stretch;
+    min-height: 0;
+    margin-top: 1rem;
+}
+
+@media (max-width: 900px) {
+    .mf-kiosk-body {
+        grid-template-columns: 1fr;
+    }
+}
+
+.mf-video-frame {
+    position: relative;
+    background: #000;
+    border: 3px solid var(--mf-blue-500);
+    border-radius: var(--mf-radius);
+    overflow: hidden;
+    min-height: 0;
+}
+
+.mf-video-frame video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* Mirrored so the kiosk behaves like a mirror, which people expect. */
+    transform: scaleX(-1);
+    display: block;
+}
+
+.mf-video-hint {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(10, 47, 79, 0.82);
+    padding: 0.55rem 0.9rem;
+    font-size: 1rem;
+    text-align: center;
+}
+
+.mf-kiosk-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 0;
+}
+
+.mf-kiosk-result {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--mf-blue-500);
+    border-radius: var(--mf-radius);
+    padding: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+    min-height: 8rem;
+}
+
+.mf-kiosk-result.is-success {
+    background: var(--mf-green);
+    border-color: var(--mf-green);
+}
+
+.mf-kiosk-result.is-warning {
+    background: var(--mf-amber);
+    border-color: var(--mf-amber);
+}
+
+.mf-kiosk-result.is-error {
+    background: var(--mf-red);
+    border-color: var(--mf-red);
+}
+
+.mf-result-name {
+    font-family: var(--mf-font-head);
+    font-size: 2rem;
+    line-height: 1.15;
+}
+
+.mf-result-action {
+    font-size: 1.35rem;
+    margin-top: 0.35rem;
+}
+
+.mf-result-time {
+    font-family: var(--mf-font-head);
+    font-size: 2.6rem;
+    line-height: 1.1;
+    margin-top: 0.4rem;
+}
+
+.mf-result-detail {
+    font-size: 0.95rem;
+    color: var(--mf-blue-100);
+    margin-top: 0.4rem;
+}
+
+.mf-kiosk-result.is-success .mf-result-detail,
+.mf-kiosk-result.is-error .mf-result-detail,
+.mf-kiosk-result.is-warning .mf-result-detail {
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.mf-scan-btn {
+    font-family: var(--mf-font-head);
+    font-size: 1.5rem;
+    padding: 1.1rem 1rem;
+    width: 100%;
+    border: none;
+    border-radius: var(--mf-radius);
+    background: var(--mf-blue-500);
+    color: var(--mf-white);
+    cursor: pointer;
+}
+
+.mf-scan-btn:hover {
+    background: #1a86dc;
+}
+
+.mf-scan-btn:disabled {
+    background: var(--mf-grey-600);
+    cursor: wait;
+}
+
+.mf-scan-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.7rem;
+}
+
+.mf-scan-split button {
+    font-size: 1.05rem;
+    padding: 0.7rem 0.5rem;
+    background: transparent;
+    border: 2px solid var(--mf-blue-500);
+    color: var(--mf-white);
+    border-radius: var(--mf-radius);
+    font-family: var(--mf-font-head);
+    cursor: pointer;
+}
+
+.mf-scan-split button:hover {
+    background: var(--mf-blue-700);
+}
+
+.mf-onsite {
+    font-size: 0.95rem;
+    color: var(--mf-blue-100);
+    text-align: center;
+}
+
+/* --- Enrolment / camera check thumbnails -------------------------------- */
+.mf-capture-layout {
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) minmax(240px, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+}
+
+@media (max-width: 800px) {
+    .mf-capture-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.mf-capture-video {
+    width: 100%;
+    background: #000;
+    border: 2px solid var(--mf-blue-500);
+    border-radius: var(--mf-radius);
+    transform: scaleX(-1);
+    display: block;
+}
+
+.mf-thumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0.75rem 0;
+}
+
+.mf-thumbs img {
+    width: 84px;
+    height: 84px;
+    object-fit: cover;
+    border: 2px solid var(--mf-blue-500);
+    border-radius: var(--mf-radius);
+    transform: scaleX(-1);
+}
+
+.mf-measure-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.mf-measure-list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--mf-grey-300);
+}
+
+.mf-measure-list li span:last-child {
+    font-family: var(--mf-font-head);
+}
+
+.mf-visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+@media print {
+    .mf-header,
+    .mf-btn-row,
+    .mf-filter-row {
+        display: none;
+    }
+
+    body {
+        background: var(--mf-white);
+    }
+}

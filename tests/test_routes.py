@@ -1,0 +1,410 @@
+"""Route-level tests: authentication, kiosk token, and the scan endpoint."""
+
+from __future__ import annotations
+
+from app.face.engine import FaceObservation, NoFaceFound
+from app.face.liveness import LivenessResult
+from app.models import AttendanceEvent
+from app.services import recognition
+
+from .conftest import add_template, make_employee, nudge, unit_vector
+
+TOKEN = "test-kiosk-token"
+
+
+# --- public pages -------------------------------------------------------------
+def test_kiosk_page_is_public(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert b"Scan" in response.data
+
+
+def test_healthz_reports_ok(client):
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.get_json()["ok"] is True
+
+
+# --- admin authentication -----------------------------------------------------
+def test_admin_requires_login(client):
+    response = client.get("/admin/", follow_redirects=False)
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_login_succeeds_and_dashboard_loads(logged_in):
+    response = logged_in.get("/admin/")
+    assert response.status_code == 200
+    assert b"Dashboard" in response.data
+
+
+def test_login_rejects_a_wrong_password(client, admin):
+    response = client.post("/login", data={"username": "office", "password": "wrong-password"})
+    assert response.status_code == 401
+    assert b"Incorrect username or password" in response.data
+
+
+def test_login_gives_the_same_message_for_an_unknown_user(client, admin):
+    """The form must not reveal which usernames exist."""
+    response = client.post("/login", data={"username": "nobody", "password": "wrong-password"})
+    assert response.status_code == 401
+    assert b"Incorrect username or password" in response.data
+
+
+def test_disabled_account_cannot_sign_in(client, db, admin):
+    admin.is_active_flag = False
+    db.session.commit()
+    response = client.post(
+        "/login", data={"username": "office", "password": "correct-horse-battery"}
+    )
+    assert response.status_code == 403
+
+
+def test_next_parameter_cannot_redirect_off_site(client, admin):
+    response = client.post(
+        "/login?next=https://evil.example/steal",
+        data={"username": "office", "password": "correct-horse-battery"},
+    )
+    assert response.status_code == 302
+    assert response.headers["Location"] in ("/admin/", "http://localhost/admin/")
+
+
+# --- kiosk token --------------------------------------------------------------
+def test_scan_without_a_token_is_refused(client):
+    response = client.post("/api/kiosk/scan", json={"frames": ["x"]})
+    assert response.status_code == 403
+    assert response.get_json()["code"] == "kiosk_unauthorised"
+
+
+def test_scan_with_a_wrong_token_is_refused(client):
+    response = client.post(
+        "/api/kiosk/scan", json={"frames": ["x"]}, headers={"X-Kiosk-Token": "guess"}
+    )
+    assert response.status_code == 403
+
+
+def test_onsite_requires_the_token(client):
+    assert client.get("/api/kiosk/onsite").status_code == 403
+    response = client.get("/api/kiosk/onsite", headers={"X-Kiosk-Token": TOKEN})
+    assert response.status_code == 200
+    assert response.get_json()["count"] == 0
+
+
+# --- scanning, with the face engine stubbed out -------------------------------
+def _fake_observation(vector):
+    """A FaceObservation carrying a chosen embedding, bypassing OpenCV."""
+    import numpy as np
+
+    return FaceObservation(
+        box=(10, 10, 120, 150),
+        score=0.95,
+        sharpness=400.0,
+        embedding=vector,
+        frame_shape=(480, 640),
+        aligned=np.zeros((112, 112, 3), dtype=np.uint8),
+    )
+
+
+def _stub_engine(monkeypatch, vectors, error=None):
+    """Make recognition.scan see *vectors* instead of running the real models."""
+
+    def fake_observe_frames(frames, engine):
+        if error is not None:
+            return [], error
+        return [_fake_observation(v) for v in vectors], None
+
+    monkeypatch.setattr(recognition, "observe_frames", fake_observe_frames)
+    monkeypatch.setattr(recognition, "get_engine", lambda app=None: object())
+    # Liveness is exercised in its own tests; here it should not interfere.
+    monkeypatch.setattr(
+        recognition, "assess", lambda obs, **kwargs: LivenessResult(True, 5.0, 1.0)
+    )
+
+
+def test_scan_recognises_and_records(client, db, monkeypatch):
+    employee = make_employee(db)
+    face = unit_vector(1)
+    add_template(db, employee, face)
+
+    _stub_engine(monkeypatch, [nudge(face, 0.2), nudge(face, 0.25)])
+    response = client.post(
+        "/api/kiosk/scan", json={"frames": ["a", "b"]}, headers={"X-Kiosk-Token": TOKEN}
+    )
+    payload = response.get_json()
+
+    assert payload["ok"] is True
+    assert payload["recorded"] is True
+    assert payload["direction"] == "in"
+    assert payload["employee"]["payroll_ref"] == "E001"
+    assert payload["next_direction"] == "out"
+    assert db.session.query(AttendanceEvent).count() == 1
+
+
+def test_second_scan_within_cooldown_records_nothing_new(client, db, monkeypatch):
+    employee = make_employee(db)
+    face = unit_vector(1)
+    add_template(db, employee, face)
+    _stub_engine(monkeypatch, [nudge(face, 0.2)])
+
+    first = client.post(
+        "/api/kiosk/scan",
+        json={"frames": ["a"], "direction": "in"},
+        headers={"X-Kiosk-Token": TOKEN},
+    ).get_json()
+    second = client.post(
+        "/api/kiosk/scan",
+        json={"frames": ["a"], "direction": "in"},
+        headers={"X-Kiosk-Token": TOKEN},
+    ).get_json()
+
+    assert first["recorded"] is True
+    assert second["ok"] is True
+    assert second["recorded"] is False
+    assert second["code"] == "duplicate"
+    assert db.session.query(AttendanceEvent).count() == 1
+
+
+def test_stranger_is_not_recorded(client, db, monkeypatch):
+    employee = make_employee(db)
+    add_template(db, employee, unit_vector(1))
+    _stub_engine(monkeypatch, [unit_vector(500), unit_vector(501)])
+
+    payload = client.post(
+        "/api/kiosk/scan", json={"frames": ["a", "b"]}, headers={"X-Kiosk-Token": TOKEN}
+    ).get_json()
+
+    assert payload["ok"] is False
+    assert payload["code"] == "not_recognised"
+    assert db.session.query(AttendanceEvent).count() == 0
+
+
+def test_scan_with_no_enrolled_faces_explains_itself(client, db, monkeypatch):
+    _stub_engine(monkeypatch, [unit_vector(1)])
+    payload = client.post(
+        "/api/kiosk/scan", json={"frames": ["a"]}, headers={"X-Kiosk-Token": TOKEN}
+    ).get_json()
+    assert payload["code"] == "no_templates"
+
+
+def test_inactive_employee_cannot_clock_in(client, db, monkeypatch):
+    employee = make_employee(db)
+    face = unit_vector(1)
+    add_template(db, employee, face)
+    employee.is_active = False
+    db.session.commit()
+
+    _stub_engine(monkeypatch, [nudge(face, 0.2)])
+    payload = client.post(
+        "/api/kiosk/scan", json={"frames": ["a"]}, headers={"X-Kiosk-Token": TOKEN}
+    ).get_json()
+
+    # An inactive employee is dropped from the index, so they are simply unknown.
+    assert payload["ok"] is False
+    assert db.session.query(AttendanceEvent).count() == 0
+
+
+def test_undecodable_frames_report_a_helpful_message(client, db, monkeypatch):
+    employee = make_employee(db)
+    add_template(db, employee, unit_vector(1))
+    _stub_engine(monkeypatch, [], error=NoFaceFound("No face was found. Please face the camera."))
+
+    payload = client.post(
+        "/api/kiosk/scan", json={"frames": ["not-an-image"]}, headers={"X-Kiosk-Token": TOKEN}
+    ).get_json()
+
+    assert payload["ok"] is False
+    assert payload["code"] == "no_face"
+    assert "face the camera" in payload["message"]
+
+
+def test_bad_direction_is_a_bad_request(client):
+    response = client.post(
+        "/api/kiosk/scan",
+        json={"frames": ["a"], "direction": "sideways"},
+        headers={"X-Kiosk-Token": TOKEN},
+    )
+    assert response.status_code == 400
+
+
+def test_scan_is_rate_limited(client, db, monkeypatch, app):
+    employee = make_employee(db)
+    face = unit_vector(1)
+    add_template(db, employee, face)
+    _stub_engine(monkeypatch, [nudge(face, 0.2)])
+    app.config["RECOGNISE_RATE_LIMIT"] = 3
+
+    codes = [
+        client.post(
+            "/api/kiosk/scan", json={"frames": ["a"]}, headers={"X-Kiosk-Token": TOKEN}
+        ).status_code
+        for _ in range(5)
+    ]
+    assert codes.count(429) == 2
+
+
+# --- admin pages load ---------------------------------------------------------
+def test_admin_pages_render(logged_in, db):
+    employee = make_employee(db)
+    for path in (
+        "/admin/",
+        "/admin/employees",
+        "/admin/employees/new",
+        f"/admin/employees/{employee.id}",
+        f"/admin/employees/{employee.id}/edit",
+        f"/admin/employees/{employee.id}/enrol",
+        "/admin/timesheets",
+        "/admin/events/manual",
+        "/admin/camera-check",
+    ):
+        response = logged_in.get(path)
+        assert response.status_code == 200, f"{path} returned {response.status_code}"
+
+
+def test_timesheet_csv_downloads(logged_in, db):
+    make_employee(db)
+    response = logged_in.get("/admin/timesheets.csv?start=2026-01-01&end=2026-01-31")
+    assert response.status_code == 200
+    assert response.mimetype == "text/csv"
+    assert "attachment" in response.headers["Content-Disposition"]
+    assert b"Payroll ref" in response.data
+
+
+def test_duplicate_payroll_ref_is_rejected(logged_in, db):
+    make_employee(db, ref="E001")
+    response = logged_in.post(
+        "/admin/employees/new",
+        data={
+            "payroll_ref": "E001",
+            "first_name": "Bob",
+            "last_name": "Smith",
+            "is_active": "y",
+        },
+    )
+    assert response.status_code == 200
+    assert b"already in use" in response.data
+
+
+def test_manual_entry_records_an_event_with_an_audit_note(logged_in, db):
+    employee = make_employee(db)
+    response = logged_in.post(
+        "/admin/events/manual",
+        data={
+            "employee_id": str(employee.id),
+            "direction": "in",
+            "occurred_at": "2026-01-12 07:30",
+            "note": "Camera down, time confirmed with supervisor",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+
+    event = db.session.query(AttendanceEvent).one()
+    assert event.method == "manual"
+    assert "office" in event.note
+    assert "supervisor" in event.note
+    # 07:30 local in January is 07:30 UTC.
+    assert event.occurred_at.strftime("%Y-%m-%d %H:%M") == "2026-01-12 07:30"
+
+
+# --- missing models -----------------------------------------------------------
+def test_scan_explains_itself_when_models_are_absent(client, db, monkeypatch, app, tmp_path):
+    """Forgetting fetch_models.py must give a clear message, not a 500."""
+    employee = make_employee(db)
+    add_template(db, employee, unit_vector(1))
+    app.config["FACE_DETECTOR_MODEL"] = tmp_path / "absent.onnx"
+    app.config["FACE_RECOGNISER_MODEL"] = tmp_path / "absent2.onnx"
+    app.extensions.pop("face_engine", None)
+
+    response = client.post(
+        "/api/kiosk/scan", json={"frames": ["a"]}, headers={"X-Kiosk-Token": TOKEN}
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["code"] == "models_missing"
+    assert db.session.query(AttendanceEvent).count() == 0
+
+
+def test_healthz_reports_missing_models(client, app, tmp_path):
+    app.config["FACE_DETECTOR_MODEL"] = tmp_path / "absent.onnx"
+    response = client.get("/healthz")
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["models"] is False
+    assert payload["database"] is True
+
+
+def test_enrolment_explains_itself_when_models_are_absent(logged_in, db, app, tmp_path):
+    employee = make_employee(db)
+    app.config["FACE_DETECTOR_MODEL"] = tmp_path / "absent.onnx"
+    app.config["FACE_RECOGNISER_MODEL"] = tmp_path / "absent2.onnx"
+    app.extensions.pop("face_engine", None)
+
+    payload = logged_in.post(
+        f"/admin/employees/{employee.id}/enrol", json={"frames": ["a", "b", "c"]}
+    ).get_json()
+    assert payload["ok"] is False
+    assert payload["code"] == "models_missing"
+    assert "fetch_models" in payload["message"]
+
+
+# --- the employee form, including the email field ------------------------------
+def test_employee_can_be_created_with_an_email(logged_in, db):
+    """Regression test: the Email() validator needs the email_validator package.
+
+    Earlier tests omitted the email field, so Optional() short-circuited and the
+    validator never ran - the missing dependency only surfaced in the browser.
+    """
+    from app.models import Employee
+
+    response = logged_in.post(
+        "/admin/employees/new",
+        data={
+            "payroll_ref": "E900",
+            "first_name": "Priya",
+            "last_name": "Shah",
+            "department": "Joinery",
+            "email": "priya.shah@example.com",
+            "is_active": "y",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    employee = db.session.query(Employee).filter_by(payroll_ref="E900").one()
+    assert employee.email == "priya.shah@example.com"
+
+
+def test_a_malformed_email_is_rejected(logged_in, db):
+    from app.models import Employee
+
+    response = logged_in.post(
+        "/admin/employees/new",
+        data={
+            "payroll_ref": "E901",
+            "first_name": "Tom",
+            "last_name": "Green",
+            "email": "not-an-email-address",
+            "is_active": "y",
+        },
+    )
+    assert response.status_code == 200
+    assert db.session.query(Employee).filter_by(payroll_ref="E901").first() is None
+
+
+def test_employee_can_be_edited_with_an_email(logged_in, db):
+    employee = make_employee(db, ref="E902")
+    response = logged_in.post(
+        f"/admin/employees/{employee.id}/edit",
+        data={
+            "payroll_ref": "E902",
+            "first_name": "Alice",
+            "last_name": "Turner",
+            "email": "alice.turner@example.com",
+            "is_active": "y",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    db.session.refresh(employee)
+    assert employee.email == "alice.turner@example.com"

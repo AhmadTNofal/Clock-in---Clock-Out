@@ -1,0 +1,115 @@
+"""Create the MySQL database, tables, and the first administrator.
+
+Run once at install time:
+
+    python scripts/init_db.py --create-database --admin office
+
+Options:
+  --create-database   Also issue CREATE DATABASE IF NOT EXISTS. Needs an account
+                      with CREATE rights (see --root-user).
+  --admin USERNAME    Create an administrator; the password is prompted for.
+
+Nothing here drops or truncates anything, so it is safe to re-run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sqlalchemy import create_engine, select, text  # noqa: E402
+from sqlalchemy.engine import URL  # noqa: E402
+
+from app import create_app  # noqa: E402
+from app.config import get_config  # noqa: E402
+from app.extensions import db  # noqa: E402
+from app.models import AdminUser  # noqa: E402
+
+
+def create_database(config, root_user: str | None, root_password: str | None) -> None:
+    """Issue CREATE DATABASE using an account that has the rights for it."""
+    user = root_user or config.MYSQL_USER
+    password = root_password if root_password is not None else config.MYSQL_PASSWORD
+
+    url = URL.create(
+        "mysql+pymysql",
+        username=user,
+        password=password,
+        host=config.MYSQL_HOST,
+        port=config.MYSQL_PORT,
+    )
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
+    name = config.MYSQL_DATABASE
+    # Identifier, not a value, so it cannot be a bound parameter. The name comes
+    # from our own .env rather than user input, and is validated first.
+    if not name.replace("_", "").isalnum():
+        raise SystemExit(f"Refusing to use unsafe database name {name!r}.")
+    with engine.connect() as connection:
+        connection.execute(
+            text(
+                f"CREATE DATABASE IF NOT EXISTS `{name}` "
+                "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+        )
+    engine.dispose()
+    print(f"Database `{name}` present.")
+
+
+def create_admin(username: str) -> None:
+    existing = db.session.scalars(
+        select(AdminUser).where(AdminUser.username == username)
+    ).first()
+    if existing is not None:
+        print(f"Administrator {username!r} already exists - leaving it alone.")
+        return
+
+    password = getpass.getpass(f"Password for {username!r} (min 10 characters): ")
+    confirm = getpass.getpass("Confirm password: ")
+    if password != confirm:
+        raise SystemExit("Passwords did not match.")
+
+    user = AdminUser(username=username, full_name=username)
+    try:
+        user.set_password(password)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    db.session.add(user)
+    db.session.commit()
+    print(f"Created administrator {username!r}.")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--create-database", action="store_true")
+    parser.add_argument("--root-user", help="Account with CREATE DATABASE rights.")
+    parser.add_argument("--root-password", help="Password for --root-user (prompted if omitted).")
+    parser.add_argument("--admin", help="Username of an administrator to create.")
+    args = parser.parse_args()
+
+    config = get_config("development")
+
+    if args.create_database:
+        root_password = args.root_password
+        if args.root_user and root_password is None:
+            root_password = getpass.getpass(f"MySQL password for {args.root_user!r}: ")
+        create_database(config, args.root_user, root_password)
+
+    app = create_app("development")
+    with app.app_context():
+        db.create_all()
+        print("Tables created (existing tables untouched).")
+        if args.admin:
+            create_admin(args.admin)
+
+    print("\nNext steps:")
+    print("  1. python scripts/fetch_models.py   (if you have not already)")
+    print("  2. python run.py                    then open http://127.0.0.1:5000/login")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

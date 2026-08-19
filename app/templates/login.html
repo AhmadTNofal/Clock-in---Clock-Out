@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Sign in &mdash; {{ app_name }}{% endblock %}
+
+{% block header %}
+<header class="mf-header">
+    <span class="mf-brand">{{ app_name }}</span>
+</header>
+{% endblock %}
+
+{% block content %}
+<div class="mf-card" style="max-width: 26rem; margin: 3rem auto;">
+    <h1>Office sign in</h1>
+    <p class="mf-subtitle">Shop-floor clocking does not need a login &mdash; use the
+        <a href="{{ url_for('kiosk.index') }}">kiosk screen</a>.</p>
+
+    <form method="post" novalidate>
+        {{ form.csrf_token }}
+
+        <div class="mf-field">
+            {{ form.username.label }}
+            {{ form.username(autofocus=true, autocomplete="username") }}
+            {% for error in form.username.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+
+        <div class="mf-field">
+            {{ form.password.label }}
+            {{ form.password(autocomplete="current-password") }}
+            {% for error in form.password.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+
+        <div class="mf-field mf-checkbox">
+            {{ form.remember() }} {{ form.remember.label }}
+        </div>
+
+        <button class="mf-btn" type="submit">Sign in</button>
+    </form>
+</div>
+{% endblock %}

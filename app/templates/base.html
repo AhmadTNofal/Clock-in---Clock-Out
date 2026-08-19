@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/moduflex.css') }}">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% block header %}
+<header class="mf-header">
+    <a class="mf-brand" href="{{ url_for('admin.dashboard') }}">{{ app_name }}</a>
+    {% if current_user.is_authenticated %}
+    <nav class="mf-nav">
+        <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('admin.employees') }}">Employees</a>
+        <a href="{{ url_for('admin.timesheets') }}">Timesheets</a>
+        <a href="{{ url_for('admin.event_manual') }}">Manual entry</a>
+        <a href="{{ url_for('admin.camera_check') }}">Camera check</a>
+        <a href="{{ url_for('kiosk.index') }}">Kiosk</a>
+    </nav>
+    <form method="post" action="{{ url_for('auth.logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="mf-btn mf-btn-secondary" type="submit">Sign out</button>
+    </form>
+    {% endif %}
+</header>
+{% endblock %}
+
+<main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="mf-flash mf-flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

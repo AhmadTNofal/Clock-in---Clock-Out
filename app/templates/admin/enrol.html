@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Enrol {{ employee.full_name }} &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Enrol {{ employee.full_name }}</h1>
+<p class="mf-subtitle">{{ employee.payroll_ref }} &middot;
+    {{ employee.templates | length }} sample(s) currently held</p>
+
+<div class="mf-card">
+    <div class="mf-capture-layout">
+        <div>
+            <video id="enrol-video" class="mf-capture-video" playsinline muted autoplay></video>
+            <p class="mf-note" id="enrol-hint">Starting camera&hellip;</p>
+        </div>
+
+        <div>
+            <h2 style="margin-top: 0;">How to get a good enrolment</h2>
+            <ol class="mf-note" style="padding-left: 1.2rem;">
+                <li>Stand where the kiosk camera will actually be, under the same lighting.</li>
+                <li>Face square on, eyes open, normal expression.</li>
+                <li>Capture {{ min_samples }} to {{ max_samples }} samples, changing the head
+                    angle slightly between each &mdash; a little left, right, up and down.</li>
+                <li>If safety glasses or a hair net are normally worn, capture some samples
+                    wearing them.</li>
+            </ol>
+
+            <div class="mf-btn-row">
+                <button class="mf-btn" id="capture-btn" type="button" disabled>Capture sample</button>
+                <button class="mf-btn mf-btn-secondary" id="clear-btn" type="button">Clear</button>
+            </div>
+
+            <div class="mf-thumbs" id="thumbs"></div>
+
+            <div class="mf-field mf-checkbox">
+                <input type="checkbox" id="replace-existing"
+                       {% if employee.is_enrolled %}checked{% endif %}>
+                <label for="replace-existing" style="text-transform: none; letter-spacing: 0;">
+                    Replace existing samples
+                </label>
+            </div>
+
+            <div class="mf-btn-row">
+                <button class="mf-btn" id="save-btn" type="button" disabled>Save enrolment</button>
+                <a class="mf-btn mf-btn-secondary"
+                   href="{{ url_for('admin.employee_detail', employee_id=employee.id) }}">Done</a>
+            </div>
+
+            <div id="enrol-status" style="margin-top: 0.9rem;"></div>
+        </div>
+    </div>
+</div>
+
+<p class="mf-note">
+    Face data is stored as a numerical template, not as a photograph &mdash; the captured images
+    are used to compute the template and then discarded. Under UK GDPR this is still
+    biometric special-category data: make sure your privacy notice and lawful basis cover it
+    before enrolling staff.
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/capture.js') }}"></script>
+<script>
+    window.ENROL_CONFIG = {
+        submitUrl: {{ url_for('admin.employee_enrol_submit', employee_id=employee.id) | tojson }},
+        detailUrl: {{ url_for('admin.employee_detail', employee_id=employee.id) | tojson }},
+        csrfToken: {{ csrf_token() | tojson }},
+        minSamples: {{ min_samples | tojson }},
+        maxSamples: {{ max_samples | tojson }}
+    };
+</script>
+<script src="{{ url_for('static', filename='js/enrol.js') }}"></script>
+{% endblock %}

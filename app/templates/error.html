@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="mf-card" style="max-width: 32rem; margin: 3rem auto;">
+    <h1>{{ code }}</h1>
+    <p class="mf-subtitle">{{ message }}</p>
+    <a class="mf-btn" href="{{ url_for('admin.dashboard') }}">Back to the dashboard</a>
+</div>
+{% endblock %}

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ employee.full_name }} &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>{{ employee.full_name }}</h1>
+<p class="mf-subtitle">
+    {{ employee.payroll_ref }}{% if employee.department %} &middot; {{ employee.department }}{% endif %}
+    &middot;
+    {% if clocked_in %}<span class="mf-badge mf-badge-in">On site</span>
+    {% else %}<span class="mf-badge">Off site</span>{% endif %}
+    {% if not employee.is_active %}<span class="mf-badge mf-badge-danger">Inactive</span>{% endif %}
+</p>
+
+<div class="mf-card">
+    <div class="mf-btn-row">
+        <a class="mf-btn" href="{{ url_for('admin.employee_enrol', employee_id=employee.id) }}">
+            {{ 'Re-enrol face' if employee.is_enrolled else 'Enrol face' }}
+        </a>
+        <a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.employee_edit', employee_id=employee.id) }}">Edit details</a>
+        <a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.timesheets', employee_id=employee.id) }}">Timesheet</a>
+        {% if employee.is_enrolled %}
+        <form method="post" action="{{ url_for('admin.employee_enrol_clear', employee_id=employee.id) }}"
+              onsubmit="return confirm('Remove all face samples for {{ employee.full_name }}? They will not be able to use the kiosk until re-enrolled.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="mf-btn mf-btn-danger" type="submit">Remove face data</button>
+        </form>
+        {% endif %}
+    </div>
+    <p class="mf-note" style="margin-bottom: 0;">
+        {{ employee.templates | length }} face sample(s) held.
+        {% if employee.templates %}
+        Enrolled {{ employee.templates[0].created_at | localtime }}.
+        {% endif %}
+    </p>
+</div>
+
+<h2>Recent entries</h2>
+{% if events %}
+<div class="mf-table-wrap">
+    <table class="mf-table">
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Direction</th>
+                <th>Method</th>
+                <th>Confidence</th>
+                <th class="mf-wrap">Note</th>
+                <th>Void</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for event in events %}
+            <tr class="{{ 'mf-row-void' if event.is_voided else '' }}">
+                <td>{{ event.occurred_at | localtime }}</td>
+                <td><span class="mf-badge mf-badge-{{ event.direction }}">{{ 'In' if event.direction == 'in' else 'Out' }}</span></td>
+                <td>{{ event.method }}</td>
+                <td>{% if event.confidence %}{{ '%.3f' | format(event.confidence) }}{% endif %}</td>
+                <td class="mf-wrap">{{ event.note or '' }}</td>
+                <td>
+                    {% if not event.is_voided %}
+                    <form method="post" action="{{ url_for('admin.event_void', event_id=event.id) }}"
+                          style="display: flex; gap: 0.3rem;"
+                          onsubmit="return confirm('Void this entry?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="text" name="note" placeholder="Reason" required
+                               style="max-width: 11rem; padding: 0.2rem 0.4rem;">
+                        <button class="mf-btn mf-btn-danger" type="submit"
+                                style="padding: 0.2rem 0.6rem;">Void</button>
+                    </form>
+                    {% else %}
+                    <span class="mf-badge mf-badge-danger">Voided</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="mf-note">Voided entries stay in the table for the audit trail but are excluded from
+    timesheets. To correct a missing entry, use
+    <a href="{{ url_for('admin.event_manual') }}">manual entry</a>.</p>
+{% else %}
+<div class="mf-card"><p class="mf-empty">No entries recorded for this employee.</p></div>
+{% endif %}
+{% endblock %}

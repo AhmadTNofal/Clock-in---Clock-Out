@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ app_name }} &mdash; {{ device_label }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/moduflex.css') }}">
+</head>
+<body class="mf-kiosk">
+<div class="mf-kiosk-shell">
+
+    <div class="mf-kiosk-top">
+        <div>
+            <span class="mf-brand">{{ app_name }}</span>
+            <div class="mf-kiosk-date" id="kiosk-location">{{ device_label }}</div>
+        </div>
+        <div style="text-align: right;">
+            <div class="mf-kiosk-clock" id="kiosk-clock">--:--</div>
+            <div class="mf-kiosk-date" id="kiosk-date"></div>
+        </div>
+    </div>
+
+    <div class="mf-kiosk-body">
+        <div class="mf-video-frame">
+            <video id="kiosk-video" playsinline muted autoplay></video>
+            <div class="mf-video-hint" id="kiosk-hint">Starting camera&hellip;</div>
+        </div>
+
+        <div class="mf-kiosk-panel">
+            <div class="mf-kiosk-result" id="kiosk-result">
+                <div class="mf-result-name" id="result-name">Ready</div>
+                <div class="mf-result-action" id="result-action">Press <strong>Scan</strong> to clock in or out</div>
+                <div class="mf-result-time" id="result-time"></div>
+                <div class="mf-result-detail" id="result-detail"></div>
+            </div>
+
+            <button class="mf-scan-btn" id="scan-btn" type="button" disabled>Scan</button>
+
+            <div class="mf-scan-split">
+                <button id="scan-in" type="button">Clock in</button>
+                <button id="scan-out" type="button">Clock out</button>
+            </div>
+
+            <div class="mf-onsite" id="onsite">&nbsp;</div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/capture.js') }}"></script>
+<script>
+    window.KIOSK_CONFIG = {
+        token: {{ kiosk_token | tojson }},
+        scanUrl: {{ url_for('kiosk.api_scan') | tojson }},
+        onsiteUrl: {{ url_for('kiosk.api_onsite') | tojson }},
+        frames: {{ scan_frames | tojson }}
+    };
+</script>
+<script src="{{ url_for('static', filename='js/kiosk.js') }}"></script>
+</body>
+</html>

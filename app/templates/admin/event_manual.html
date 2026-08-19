@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Manual entry &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Manual entry</h1>
+<p class="mf-subtitle">For missed scans and corrections. Every manual entry records who made
+    it and why.</p>
+
+<div class="mf-card" style="max-width: 34rem;">
+    <form method="post" novalidate>
+        {{ form.csrf_token }}
+
+        <div class="mf-field">
+            {{ form.employee_id.label }}
+            {{ form.employee_id() }}
+            {% for error in form.employee_id.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+
+        <div class="mf-field">
+            {{ form.direction.label }}
+            {{ form.direction() }}
+        </div>
+
+        <div class="mf-field">
+            {{ form.occurred_at.label }}
+            {{ form.occurred_at(placeholder="2026-08-19 07:30") }}
+            <p class="mf-note">Local time ({{ timezone_name }}). Format YYYY-MM-DD HH:MM.</p>
+            {% for error in form.occurred_at.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+
+        <div class="mf-field">
+            {{ form.note.label }}
+            {{ form.note(rows=3, placeholder="e.g. Camera down at start of shift, time confirmed with supervisor") }}
+            {% for error in form.note.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+
+        <div class="mf-btn-row">
+            <button class="mf-btn" type="submit">Record entry</button>
+            <a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.timesheets') }}">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
