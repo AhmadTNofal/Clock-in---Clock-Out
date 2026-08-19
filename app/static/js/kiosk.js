@@ -42,7 +42,10 @@
         threshold: config.presenceThreshold
     });
 
-    var STATE = { IDLE: "idle", LOOKING: "looking", CONFIRMING: "confirming", RESULT: "result" };
+    /* RESULT is deliberately NOT a state. Showing somebody their result must not
+     * stop the kiosk scanning, or the next person in a queue waits for the screen
+     * to clear before they can clock. A result is a display with an expiry. */
+    var STATE = { IDLE: "idle", LOOKING: "looking", CONFIRMING: "confirming" };
     var state = STATE.IDLE;
     var busy = false;              /* a request is in flight */
     var pending = null;            /* { token, employee, direction } */
@@ -62,7 +65,13 @@
      * stationary person in and straight back out (a short one). Gating on
      * absence matches what people actually expect: you are clocked when you
      * arrive, and not clocked again until you have been away. */
+    /* Who must leave before *they* can be clocked again. Per person on purpose:
+     * "Sam has just clocked, so do not clock Sam again yet" must not be read as
+     * "nobody may clock", which is what stalled a queue. */
     var awaitingDeparture = false;
+    var latchedPersonId = null;
+    var resultUntil = 0;
+    var lastLatchedPollAt = 0;
     var absentSince = 0;
     var latchedAt = 0;
     var latchedPollTimer = null;
@@ -71,10 +80,10 @@
     var lastMotion = null;
 
     var RESULT_SECONDS = 6;
-    /* There is no minimum interval any more: whoever is recognised is clocked to
-     * the opposite of their current state. Requiring a departure first is the
-     * only throttle, so this is just a guard against two polls in flight around
-     * the same sighting. */
+    /* With departure gating off (the default) this is the ONLY thing stopping two
+     * overlapping polls of one sighting producing two entries. It must stay at
+     * least as long as a capture plus the countdown, or the same face gets
+     * clocked twice for a single approach. */
     var REPEAT_SUPPRESS_MS = 2000;
     /* Hands-free capture is deliberately leaner than a button press: two frames
      * instead of three. Capture time dominates how long somebody waits for their
@@ -89,6 +98,9 @@
      * explanation. 0 disables the fallback. */
     var REARM_MS = (config.rearmSeconds === 0 ? 0 : (config.rearmSeconds || 30)) * 1000;
     var LATCHED_POLL_MS = config.latchedPollMs || 1500;
+    /* How long after a clock the kiosk keeps polling at full rate, to serve the
+     * next person in a queue without delay. */
+    var QUEUE_WINDOW_MS = (RESULT_SECONDS + 2) * 1000;
     var IDLE_POLL_MS = config.idlePollMs === 0 ? 0 : (config.idlePollMs || 4000);
     /* Consecutive "no face" answers from the server needed to call it a
      * departure. Two, so a single blurred frame as somebody turns away does not
@@ -147,7 +159,10 @@
                 " -> " +
                 (lastScore >= config.presenceThreshold ? "SOMEBODY THERE" : "empty") +
                 ")",
-            "clocking     " + latch + "  [last re-arm: " + lastRearmReason + "]",
+            "clocking     " +
+                latch +
+                (latchedPersonId === null ? "" : " person#" + latchedPersonId) +
+                "  [last re-arm: " + lastRearmReason + "]",
             "last reply   " +
                 lastCode +
                 (lastMotion === null ? "" : "   (motion " + lastMotion + ")"),
@@ -186,7 +201,7 @@
         state = STATE.IDLE;
         pending = null;
         cancelBtn.hidden = true;
-        stopLooking();
+        resultUntil = 0;
         missStreak = 0;
         setResult(
             "",
@@ -202,26 +217,40 @@
             : "Stand square to the camera and press Scan";
     }
 
-    function showResultFor(seconds) {
-        state = STATE.RESULT;
+    /* Show an outcome for a while. Scanning continues underneath, so a different
+     * person stepping up is recognised straight away and their countdown simply
+     * replaces what is on screen. */
+    function showResultFor(seconds, personId) {
+        state = STATE.IDLE;
         pending = null;
         cancelBtn.hidden = true;
-        /* Nothing more happens automatically until this person has left. */
-        if (REQUIRE_DEPARTURE) {
+        resultUntil = Date.now() + (seconds || RESULT_SECONDS) * 1000;
+
+        if (REQUIRE_DEPARTURE && personId !== null && personId !== undefined) {
             awaitingDeparture = true;
+            latchedPersonId = personId;
             absentSince = 0;
             latchedAt = Date.now();
             noFaceRuns = 0;
-            startLatchedWatch();
         }
-        /* Stop polling for a face while the result is on screen. Leaving this
-         * timer running was a bug: once the screen returned to idle the stale
-         * poll kept calling /identify with nobody in front of the camera, and
-         * happily started a fresh countdown - which then committed. */
-        stopLooking();
+
         clearTimer("countdown");
         clearTimer("result");
-        resultTimer = window.setTimeout(showIdle, (seconds || RESULT_SECONDS) * 1000);
+        resultTimer = window.setTimeout(function () {
+            /* Fall back to Ready unless something newer has taken the screen.
+             *
+             * This deliberately does NOT require state === IDLE: scanning resumes
+             * immediately after a result, so the state is normally LOOKING by the
+             * time this fires. Checking for IDLE meant the revert never ran and
+             * the result panel stayed up for ever - the "it is stuck" report. */
+            if (state !== STATE.CONFIRMING && Date.now() >= resultUntil) {
+                showIdle();
+            }
+        }, (seconds || RESULT_SECONDS) * 1000);
+    }
+
+    function resultOnScreen() {
+        return Date.now() < resultUntil;
     }
 
     function clearTimer(which) {
@@ -331,16 +360,31 @@
             lastPersonAt = Date.now();
         }
         refreshOnsite();
-        showResultFor(RESULT_SECONDS);
+        showResultFor(RESULT_SECONDS, data.employee ? data.employee.id : null);
     }
 
     /* --- Hands-free: look for a known face ------------------------------ */
     function lookForFace() {
-        if (busy || state === STATE.CONFIRMING || state === STATE.RESULT) {
+        /* Only an in-progress countdown blocks scanning. Showing a result does
+         * not, which is what keeps a queue moving. */
+        if (busy || state === STATE.CONFIRMING) {
             return;
         }
         if (Date.now() < backoffUntil) {
             return;
+        }
+        /* Polling rate while latched.
+         *
+         * A queue forms in the seconds right after somebody clocks, so for that
+         * window we keep the full rate - throttling here is what made the next
+         * person wait. Somebody merely lingering in view stays for minutes, so
+         * after the window we drop to the gentler rate and stop burning requests
+         * on them. */
+        if (awaitingDeparture && Date.now() - latchedAt > QUEUE_WINDOW_MS) {
+            if (Date.now() - lastLatchedPollAt < LATCHED_POLL_MS) {
+                return;
+            }
+            lastLatchedPollAt = Date.now();
         }
         busy = true;
 
@@ -370,6 +414,18 @@
                         backoffUntil = Date.now() + 15000;
                         return;
                     }
+                    if (data.code === "no_face") {
+                        /* The server is the reliable judge of whether anybody is
+                         * in front of the camera, so this is how a departure gets
+                         * confirmed even when the presence check disagrees. */
+                        if (awaitingDeparture) {
+                            noFaceRuns += 1;
+                            if (noFaceRuns >= NO_FACE_TO_REARM) {
+                                rearm("no face");
+                            }
+                        }
+                        return;
+                    }
                     /* A single miss is normal while somebody walks up, so the
                      * screen stays quiet rather than flickering. But staying
                      * quiet for ever is worse than a flicker: somebody the
@@ -384,12 +440,27 @@
                 }
                 missStreak = 0;
 
+                noFaceRuns = 0;
+
                 if (data.code === "pending" && data.confirm_token) {
+                    /* The latched person must leave before being clocked again. */
+                    if (awaitingDeparture && data.employee.id === latchedPersonId) {
+                        if (!resultOnScreen()) {
+                            hint.textContent = "All set - step away from the camera";
+                        }
+                        return;
+                    }
+                    /* Anybody else is served straight away. At a shift change the
+                     * scene never empties between two people, so waiting for that
+                     * would leave the queue stuck behind whoever clocked first. */
+                    if (awaitingDeparture) {
+                        rearm("different person");
+                    }
                     if (
                         data.employee.id === lastPersonId &&
                         Date.now() - lastPersonAt < REPEAT_SUPPRESS_MS
                     ) {
-                        return; /* just dealt with this person */
+                        return; /* two polls around the same sighting */
                     }
                     beginCountdown(data);
                 }
@@ -520,116 +591,39 @@
             rearm("timeout");
         }
 
-        if (state !== STATE.IDLE && state !== STATE.LOOKING) {
-            return;
-        }
-
-        if (awaitingDeparture) {
-            if (somebodyThere) {
-                var waitLeft = REARM_MS
-                    ? Math.ceil((REARM_MS - (Date.now() - latchedAt)) / 1000)
-                    : 0;
-                hint.textContent =
-                    waitLeft > 0
-                        ? "All set — step away from the camera (ready again in " +
-                          waitLeft + "s)"
-                        : "All set — step away from the camera";
-            }
+        if (state === STATE.CONFIRMING) {
             return;
         }
 
         if (somebodyThere && state === STATE.IDLE) {
             state = STATE.LOOKING;
-            setResult("", "Hold still…", "Checking who you are", "", "");
-            hint.textContent = "Look at the camera";
+            /* Do not stamp over a result somebody is still reading, and do not
+             * nag the latched person - they are simply waiting to walk away. */
+            if (!resultOnScreen() && !awaitingDeparture) {
+                setResult("", "Hold still…", "Checking who you are", "", "");
+                hint.textContent = "Look at the camera";
+            }
             lookForFace();
             if (!lookTimer) {
                 lookTimer = window.setInterval(lookForFace, config.pollMs);
             }
         } else if (!somebodyThere && state === STATE.LOOKING) {
-            /* They left before being recognised. */
+            /* Nobody in view: stop polling until somebody arrives. */
             state = STATE.IDLE;
             stopLooking();
-            showIdle();
+            if (!resultOnScreen()) {
+                showIdle();
+            }
         }
     }
 
     /* Allow automatic clocking again. */
     function rearm(why) {
         awaitingDeparture = false;
+        latchedPersonId = null;
         lastPersonId = null;
         lastRearmReason = why;
         noFaceRuns = 0;
-        stopLatchedWatch();
-    }
-
-    /* While latched, let the server answer "is anybody still there?".
-     *
-     * The face detector is a far better judge of that than a grey-level
-     * difference, so it is the authority for deciding somebody has left. The
-     * presence check remains as a fast path and the timer as a backstop: any of
-     * the three re-arming is enough, which is what stops a single unreliable
-     * signal wedging the kiosk. */
-    function startLatchedWatch() {
-        if (latchedPollTimer || LATCHED_POLL_MS <= 0) {
-            return;
-        }
-        latchedPollTimer = window.setInterval(watchWhileLatched, LATCHED_POLL_MS);
-    }
-
-    function stopLatchedWatch() {
-        if (latchedPollTimer) {
-            window.clearInterval(latchedPollTimer);
-            latchedPollTimer = null;
-        }
-    }
-
-    function watchWhileLatched() {
-        if (!awaitingDeparture || busy || Date.now() < backoffUntil) {
-            return;
-        }
-        /* One frame is enough: this asks "who is there", not "is this a live
-         * face", and a single frame skips the liveness comparison entirely. */
-        var frame = capture.grab();
-        if (!frame) {
-            return;
-        }
-        busy = true;
-        window
-            .postJson(config.identifyUrl, { frames: [frame] },
-                { "X-Kiosk-Token": config.token })
-            .then(function (data) {
-                lastCode = (data && data.code) || "?";
-                if (!data) {
-                    return;
-                }
-                if (data.code === "rate_limited") {
-                    backoffUntil = Date.now() + 15000;
-                    return;
-                }
-                if (data.code === "no_face") {
-                    noFaceRuns += 1;
-                    if (noFaceRuns >= NO_FACE_TO_REARM) {
-                        rearm("no face");
-                    }
-                    return;
-                }
-                noFaceRuns = 0;
-                /* Somebody else has stepped up - at a shift change the scene
-                 * never goes empty between two people, so waiting for that would
-                 * leave the second person unable to clock.
-                 *
-                 * Only usable when we know who the last person was: without that,
-                 * everybody looks new, and a cancelled entry would be re-offered
-                 * immediately - silently undoing the Cancel. */
-                if (lastPersonId !== null && data.employee && data.employee.id !== lastPersonId) {
-                    rearm("different person");
-                }
-            })
-            .catch(function () {})
-            .then(function () {
-                busy = false;
-            });
     }
 
     /* Slow safety poll, independent of the presence check.
@@ -644,13 +638,7 @@
             return;
         }
         idlePollTimer = window.setInterval(function () {
-            if (
-                busy ||
-                awaitingDeparture ||
-                state === STATE.CONFIRMING ||
-                state === STATE.RESULT ||
-                Date.now() < backoffUntil
-            ) {
+            if (busy || state === STATE.CONFIRMING || Date.now() < backoffUntil) {
                 return;
             }
             /* Only needed when presence thinks the scene is empty; if it can see

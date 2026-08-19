@@ -163,28 +163,29 @@ somebody arrives          recognised                countdown ends
 Clocked in? The next time the kiosk sees you, it clocks you out. Clocked out? It
 clocks you in. Nothing to press, no direction to choose.
 
-Nothing is ever refused for having clocked recently — there is no minimum interval
-and no "already clocked in" message. Whoever is recognised is clocked to the
-opposite of their current state, full stop.
-
-What stops it clocking you over and over is **absence**: after an entry, the kiosk
-waits until you have walked out of the camera's view before it will clock you
-again. That is the only throttle, and it matches what people expect from a switch:
+Nothing is ever refused. There is no minimum interval, no "already clocked in"
+message, and no requirement to walk away first. **Any recognised face is clocked,
+including the same face again**, to the opposite of its current state:
 
 ```
-        arrive  ─────────────▶  clocked IN
-                                     │
-        stand there  ──────────▶  nothing happens
-        (screen: "All set — step away from the camera")
-                                     │
-        walk away  ────────────▶  kiosk re-arms (scene reads empty ~1s)
-                                     │
-        come back  ────────────▶  clocked OUT
+        face detected  ─────▶  "Clocking IN 2..."  ─────▶  clocked IN
+                                                                │
+        still there    ─────▶  "Clocking OUT 2..." ─────▶  clocked OUT
+                                                                │
+        still there    ─────▶  "Clocking IN 2..."  ─────▶  clocked IN
 ```
 
-Gating on time cannot do this. A long interval blocks you from genuinely clocking
-out; a short one clocks a stationary person in and straight back out again while
-they read the screen. Absence has neither problem.
+The result panel never holds the kiosk up: scanning continues underneath it, and a
+new recognition simply overwrites what is on screen.
+
+**This puts all the weight on the countdown.** A person who stays in front of the
+camera is clocked roughly every three seconds, and the only thing between a passing
+glance and a recorded entry is `AUTO_CONFIRM_SECONDS` and the Cancel button. That
+is a deliberate choice for a kiosk in a doorway people walk up to and leave. If
+yours is somewhere people loiter — facing a desk, or a walkway — set
+`AUTO_REQUIRE_DEPARTURE=true` and the old behaviour returns: a person must leave
+the camera's view before they can be clocked again, held **per person** so a queue
+still moves.
 
 Replayed or double-submitted confirmations are handled separately, by making each
 confirmation token **single use**. That was previously the minimum interval's job,
@@ -200,6 +201,11 @@ Because the departure check is now the *only* throttle, it matters that it canno
 get stuck — hence the three independent re-arm signals below. Do not set
 `AUTO_REQUIRE_DEPARTURE=false` while hands-free is on: with no throttle at all,
 somebody standing in front of the camera would be clocked every few seconds.
+
+#### When departure gating is switched on
+
+Everything in this subsection applies only with `AUTO_REQUIRE_DEPARTURE=true`. With
+the default (off) there is nothing to re-arm — a recognised face is always clocked.
 
 #### Three ways to re-arm, because one is not enough
 
@@ -336,6 +342,30 @@ than flickering. But after a few consecutive misses it says what would help —
 Scan button". Failing silently would leave somebody watching a screen that looks
 broken.
 
+### A queue keeps moving
+
+Showing somebody their result does not pause the kiosk. The "must have left first"
+rule is held **per person** — "Sam has just clocked, so do not clock Sam again
+yet", never "nobody may clock" — so while Sam's result is still on screen the next
+person is recognised, their countdown replaces the display, and they are clocked.
+Measured in the browser harness: the second person waits about 2.4 seconds, of
+which 2 seconds is their own confirmation countdown.
+
+For the first few seconds after a clock the kiosk deliberately keeps polling at
+full rate, because that is exactly when a queue forms. Once that window passes it
+drops to `AUTO_LATCHED_POLL_MS`, so somebody merely lingering in view does not
+generate requests indefinitely.
+
+Two people alternating at the kiosk each toggle independently — verified end to end
+with the real models:
+
+```
+Alys  -> direction=in    recorded=True
+Bryn  -> direction=in    recorded=True
+Alys  -> direction=out   recorded=True
+Bryn  -> direction=out   recorded=True
+```
+
 ### Bystanders
 
 A shop floor is busy, and refusing every frame containing two faces would make
@@ -410,7 +440,7 @@ anything.
 | `LIVENESS_REQUIRE_MOTION` | `true` | See the honest assessment below. |
 | `KIOSK_AUTO_MODE` | `true` | Hands-free clocking. `false` reverts to press-to-scan. |
 | `AUTO_CONFIRM_SECONDS` | `2` | Cancellable countdown before an automatic entry is written. `0` records instantly (not advised — it removes the only guard against being clocked out in passing). |
-| `AUTO_REQUIRE_DEPARTURE` | `true` | Require the person to leave the camera's view before they can be clocked again. This is what makes the kiosk a toggle. |
+| `AUTO_REQUIRE_DEPARTURE` | `false` | Off: any recognised face is clocked, the same face included. `true` requires the person to leave the view first (held per person, so a queue still moves) — use it where people loiter in front of the camera. |
 | `AUTO_DEPARTURE_MS` | `900` | How long the scene must read empty to count as having left. |
 | `AUTO_REARM_SECONDS` | `30` | Re-arm after this long even if the scene never reads empty. Stops the kiosk getting permanently stuck when the camera can always see somebody. `0` disables it. |
 | `AUTO_LATCHED_POLL_MS` | `1500` | How often to ask the server "is anybody still there?" while latched. The reliable re-arm signal. `0` disables it. |
@@ -493,8 +523,9 @@ deactivating an employee drops them from the recognition index.
 python -m pytest
 ```
 
-146 tests, no MySQL needed — the suite runs against SQLite in memory. With face
-photos added (see below) that becomes 154.
+148 tests, no MySQL needed — the suite runs against SQLite in memory. With face
+photos added (see below) that becomes 156. The browser harnesses add 55 more
+checks on the kiosk JavaScript.
 
 ### The kiosk JavaScript
 
@@ -512,7 +543,10 @@ Node is installed, and skips it otherwise. To run it directly:
 node tests/js/kiosk_harness.js
 ```
 
-It earned its keep immediately: it caught the recognition poll timer not being
+A second harness, `tests/js/immediate_test.js`, covers the shipped default (any
+face clocks immediately) and pins the stuck-result regression.
+
+They earn their keep: they caught the recognition poll timer not being
 stopped when a countdown began, which meant that once the screen returned to
 idle the stale poll kept calling `/identify` with nobody in front of the camera
 and started a fresh countdown that then committed an entry.
@@ -642,8 +676,11 @@ mysqldump -u clocking -p clocking > clocking-backup.sql
 | Not picked up until you are close | Raise `CAPTURE_MAX_WIDTH` and `FACE_DETECT_MAX_SIDE` to 1280, then lower `FACE_MIN_PIXELS` towards 45. Check the camera is better than 720p. |
 | Live people rejected as photographs | The liveness gap is too short or the camera too noisy. Raise `AUTO_FRAME_GAP_MS`, or lower `LIVENESS_MIN_MOTION` (weakens photo protection). |
 | Clocked in but wanted to stay in | Press **Cancel** during the countdown. |
+| It keeps clocking me while I stand there | Expected with the default `AUTO_REQUIRE_DEPARTURE=false`. Set it to `true`, or lengthen `AUTO_CONFIRM_SECONDS` so there is more time to cancel. |
+| Result panel stays on screen | Fixed: the revert used to require a state the kiosk had already left. If you see it again, check the browser console for a JavaScript error. |
 | It clocked me twice | Check `AUTO_REQUIRE_DEPARTURE` is `true`. Departure is the only throttle; with it off, anybody in view is clocked repeatedly. |
-| Screen says "step away from the camera" | Working as intended — you have been clocked, and it will not clock you again until you have left the view. |
+| A queue is slow at shift change | Each person still gets their own `AUTO_CONFIRM_SECONDS` countdown, which is the floor. Shorten it if the queue matters more than the chance to cancel. |
+| Screen says "step away from the camera" | Only appears with `AUTO_REQUIRE_DEPARTURE=true`: you have been clocked and must leave the view before clocking again. |
 | Works walking in, unpredictable afterwards | The presence check is missing the departure. The server-side check (`AUTO_LATCHED_POLL_MS`) now covers this; confirm with `?debug=1` that "last re-arm" changes after somebody leaves. |
 | Clocks once, then never again | The camera can always see somebody, so the departure check never clears. It now frees itself after `AUTO_REARM_SECONDS`; open the kiosk with `?debug=1` to watch the presence score and latch state live. Move the camera so it sees an empty scene, or raise `AUTO_PRESENCE_THRESHOLD`. |
 | Will not clock me out when I come back | The kiosk has not seen the doorway empty. Check **Camera check**: the presence score must drop below the threshold when nobody is there. Lower `AUTO_DEPARTURE_MS` or raise `AUTO_PRESENCE_THRESHOLD`. |

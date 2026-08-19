@@ -541,13 +541,29 @@ def test_departure_settings_reach_the_kiosk_page(client, app):
     body = client.get("/").data.decode("utf-8")
     assert "requireDeparture" in body
     assert "departureMs" in body
-    assert "requireDeparture: true" in body
+    assert "requireDeparture: false" in body
 
 
-def test_departure_gating_is_on_by_default(app):
-    assert app.config["AUTO_REQUIRE_DEPARTURE"] is True
+def test_departure_gating_is_off_by_default(app):
+    """Any recognised face is clocked, the same face included.
+
+    With gating on, somebody the camera can always see was clocked once and then
+    watched a screen that looked stuck. Off is the shipped default; the cost is
+    that a person who stays in view is clocked repeatedly, with the countdown as
+    the only guard.
+    """
+    assert app.config["AUTO_REQUIRE_DEPARTURE"] is False
+    # Still meaningful for sites that switch gating back on.
     assert app.config["AUTO_DEPARTURE_MS"] >= 300, (
         "too short and somebody shifting their weight counts as leaving"
+    )
+
+
+def test_the_countdown_is_the_remaining_guard(app):
+    """With no departure gating, the countdown is all that prevents a mis-clock."""
+    assert app.config["AUTO_CONFIRM_SECONDS"] >= 1, (
+        "AUTO_CONFIRM_SECONDS=0 with AUTO_REQUIRE_DEPARTURE=false leaves nothing "
+        "at all between a passing glance at the camera and a recorded entry"
     )
 
 

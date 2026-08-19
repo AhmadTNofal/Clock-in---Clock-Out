@@ -111,11 +111,20 @@ class Config:
     # clocked to the opposite of their current state, and nothing is refused for
     # having clocked recently. A confirmation token is single use, which handles
     # replays without also blocking genuine clocking.
-    # Require the scene to read empty again before offering the same person
-    # another automatic entry. Switching this off falls back to the interval
-    # above being the only guard, which on a busy doorway means somebody
-    # standing still can be clocked repeatedly.
-    AUTO_REQUIRE_DEPARTURE = _bool("AUTO_REQUIRE_DEPARTURE", True)
+    # Require the person to leave the camera's view before they can be clocked
+    # again.
+    #
+    # OFF by default, by choice: with it on, somebody testing at their desk - or
+    # standing at a kiosk the camera can always see - gets clocked once and then
+    # watches a screen that appears stuck. Off means any recognised face is
+    # clocked immediately, the same face included, which is the behaviour most
+    # people expect from a face-operated switch.
+    #
+    # The consequence is worth understanding: somebody who stays in front of the
+    # camera is clocked in and out repeatedly, roughly every few seconds, and the
+    # only thing between them and a messy timesheet is the AUTO_CONFIRM_SECONDS
+    # countdown. Turn this back on for a kiosk sited where people loiter.
+    AUTO_REQUIRE_DEPARTURE = _bool("AUTO_REQUIRE_DEPARTURE", False)
     # How long the scene must read empty for a departure to count. Long enough
     # not to be triggered by somebody shifting their weight, short enough that
     # stepping aside and back is not a chore.

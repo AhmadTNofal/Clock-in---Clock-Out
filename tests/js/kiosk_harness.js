@@ -135,6 +135,8 @@ eval(fs.readFileSync(path.join(APP, "capture.js"), "utf8"));
 eval(fs.readFileSync(path.join(APP, "kiosk.js"), "utf8"));
 
 const commits = () => calls.filter((c) => c.url.includes("commit")).length;
+const clockNow = () => now;
+const nameEl = () => els["result-name"].textContent;
 /* Reaches into kiosk.js's diagnostics via the debug overlay text, which is the
  * only place the re-arm reason is exposed. */
 function lastRearmReasonSeen() {
@@ -367,6 +369,50 @@ const pendingIn = {
     "queue", () => commits() === beforeQueue + 1, 20000);
   check("THE NEXT PERSON IN A QUEUE IS SERVED WITHOUT THE SCENE EMPTYING",
         served, `commits=${commits()} (was ${beforeQueue})`);
+
+  // 13. THE REPORTED FAILURE: while one person's result is on screen, nobody else
+  //     could clock. The result display lasts 6 seconds, so a queue stalled for
+  //     6 seconds per person. Showing a result must not stop scanning.
+  scenePixel = 0; faceOverride = null;
+  await advance(20000);
+  calls.length = 0;
+
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-A",
+    confirm_seconds: 2, direction: "in",
+    employee: { id: 501, name: "Alys Bowen", first_name: "Alys" },
+  };
+  scenePixel = 205;
+  await advanceUntil("A clocked", () => action().includes("Clocked IN"), 12000);
+  const afterA = commits();
+  check("first person clocked", afterA === 1, `commits=${afterA}`);
+  check("their result is on screen", action().includes("Clocked IN"));
+
+  /* Second person steps up immediately, well inside the 6s result window, and
+   * the scene never empties between them. */
+  const tBefore = clockNow();
+  identifyReply = {
+    ok: true, code: "pending", pending: true, confirm_token: "tok-B",
+    confirm_seconds: 2, direction: "in",
+    employee: { id: 502, name: "Bryn Davies", first_name: "Bryn" },
+  };
+  const servedB = await advanceUntil(
+    "B clocked", () => commits() === afterA + 1, 20000);
+  const waited = clockNow() - tBefore;
+
+  check("SECOND PERSON CLOCKS WHILE THE FIRST RESULT IS STILL SHOWING",
+        servedB, `commits=${commits()} (was ${afterA})`);
+  /* Most of the remaining wait is the countdown itself, which must still happen:
+   * it is the only chance to cancel. So this pins both ends - promptly served,
+   * but not without the confirmation pause. */
+  check("they do not wait for the result screen to clear",
+        servedB && waited < 4000,
+        `waited ${waited}ms (result window is 6000ms)`);
+  check("the confirmation countdown still ran for them",
+        waited >= 2000, `waited ${waited}ms, countdown is 2000ms`);
+  check("the screen now shows the second person",
+        /Bryn|Clocked/.test(nameEl() + " " + action()),
+        `name="${nameEl()}" action="${action()}"`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

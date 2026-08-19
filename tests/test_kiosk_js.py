@@ -14,7 +14,8 @@ the network, then drives the real ``kiosk.js`` with fake timers and asserts that
 * the kiosk re-arms when the *server* reports no face, even if the browser's
   presence check insists somebody is there;
 * somebody the presence check cannot see is still clocked by the idle poll;
-* the next person in a queue is served without the scene emptying.
+* the next person in a queue is served without the scene emptying;
+* a second person clocks while the first person's result is still on screen.
 
 There is also ``tests/js/presence_test.js``, which drives the presence detector
 through awkward departures (lingering at the edge of view, lighting drift, a brief
@@ -66,6 +67,22 @@ def test_browser_scripts_parse(script):
         [NODE, "--check", str(path)], capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+@needs_node
+def test_immediate_reclock_default():
+    """Covers the shipped default, where any face is clocked without leaving.
+
+    Also pins the stuck-result regression: the revert to "Ready" required a state
+    the kiosk had already moved on from, so the panel stayed up indefinitely.
+    """
+    harness = HARNESS.parent / "immediate_test.js"
+    result = subprocess.run(
+        [NODE, str(harness)], capture_output=True, text=True, timeout=120
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, f"immediate-reclock harness failed:\n{output}"
+    assert "FAIL" not in output, output
 
 
 @needs_node
