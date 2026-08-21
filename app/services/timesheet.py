@@ -15,7 +15,8 @@ Paid hours are derived from actual hours by three rules, applied in this order:
 the worked period is clipped to the employee's shift band (clock in early, paid
 from the shift start; clock out late, paid to the shift end), the clipped times
 are snapped to the 15-minute pay grid (in rounds forward, out rounds back, so
-07:34 is paid from 07:45), and the shift's unpaid break is deducted. Actual
+07:34 is paid from 07:45), and the shift's unpaid break is deducted - but only
+when the paid time is long enough to have contained the break. Actual
 times are always shown alongside so nothing is hidden from whoever runs payroll.
 """
 
@@ -30,7 +31,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from ..extensions import db
-from ..models import DIRECTION_IN, DIRECTION_OUT, AttendanceEvent, Employee, ShiftPattern
+from ..models import (
+    DIRECTION_IN,
+    DIRECTION_OUT,
+    AttendanceEvent,
+    Employee,
+    ShiftPattern,
+    visible_employee_clause,
+)
 
 PAY_INTERVAL = dt.timedelta(minutes=15)
 
@@ -188,7 +196,12 @@ class Shift:
         if start is None or end is None:
             return None
         seconds = (end - start).total_seconds()
-        if self.pattern is not None:
+        # The break comes off only when the paid time is long enough to have
+        # contained it - a 2.5-hour afternoon stint has no lunch to deduct.
+        if (
+            self.pattern is not None
+            and seconds > self.pattern.break_applies_after_minutes * 60
+        ):
             seconds -= self.pattern.unpaid_break_minutes * 60
         return round(max(0.0, seconds) / 3600.0, 2)
 
@@ -275,7 +288,11 @@ def build_timesheet(
     """Build shifts for a local date range, ordered by employee then time."""
     first, last = local_range_bounds(start, end, tz)
 
-    employee_stmt = select(Employee).order_by(Employee.last_name, Employee.first_name)
+    employee_stmt = (
+        select(Employee)
+        .where(visible_employee_clause())
+        .order_by(Employee.last_name, Employee.first_name)
+    )
     if employee_id is not None:
         employee_stmt = employee_stmt.where(Employee.id == employee_id)
     else:
@@ -308,7 +325,7 @@ def list_departments() -> list[str]:
     """Distinct non-empty department names, for the timesheet filter."""
     rows = db.session.scalars(
         select(Employee.department)
-        .where(Employee.department.is_not(None))
+        .where(Employee.department.is_not(None), visible_employee_clause())
         .distinct()
         .order_by(Employee.department)
     ).all()

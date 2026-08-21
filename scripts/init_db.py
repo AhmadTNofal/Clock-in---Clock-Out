@@ -75,6 +75,17 @@ def upgrade_existing_tables() -> None:
         db.session.commit()
         print("Added employee.shift_pattern_id column.")
 
+    shift_columns = {c["name"] for c in inspect(db.engine).get_columns("shift_pattern")}
+    if "break_applies_after_minutes" not in shift_columns:
+        db.session.execute(
+            text(
+                "ALTER TABLE shift_pattern ADD COLUMN break_applies_after_minutes "
+                "INTEGER NOT NULL DEFAULT 360"
+            )
+        )
+        db.session.commit()
+        print("Added shift_pattern.break_applies_after_minutes column (default 360).")
+
 
 def seed_default_shift() -> None:
     """Create the standard day shift once; never touch existing patterns."""

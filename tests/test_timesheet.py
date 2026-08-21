@@ -153,6 +153,7 @@ def _pattern(**kwargs) -> ShiftPattern:
         start_time=dt.time(7, 30),
         end_time=dt.time(16, 0),
         unpaid_break_minutes=30,
+        break_applies_after_minutes=360,
     )
     defaults.update(kwargs)
     return ShiftPattern(**defaults)
@@ -228,6 +229,39 @@ def test_without_a_pattern_pay_still_uses_the_grid_but_no_lunch(db):
     assert shifts[0].paid_start_local.strftime("%H:%M") == "07:45"
     assert shifts[0].paid_end_local.strftime("%H:%M") == "16:00"
     assert shifts[0].paid_hours == pytest.approx(8.25)
+
+
+def test_short_attendance_keeps_its_break(db):
+    """A 2.5-hour afternoon stint contains no lunch, so nothing is deducted."""
+    employee = make_employee(db)
+    events = [
+        _event(employee, DIRECTION_IN, _utc(2026, 1, 12, 12, 45)),
+        _event(employee, DIRECTION_OUT, _utc(2026, 1, 12, 15, 15)),
+    ]
+    shifts = pair_events(employee, events, LONDON, pattern=_pattern())
+    assert shifts[0].paid_hours == pytest.approx(2.5)  # not 2.0
+
+
+def test_break_deducted_once_paid_time_exceeds_the_threshold(db):
+    """Just over six paid hours: the lunch comes off as usual."""
+    employee = make_employee(db)
+    events = [
+        _event(employee, DIRECTION_IN, _utc(2026, 1, 12, 7, 30)),
+        _event(employee, DIRECTION_OUT, _utc(2026, 1, 12, 13, 45)),
+    ]
+    shifts = pair_events(employee, events, LONDON, pattern=_pattern())
+    assert shifts[0].paid_hours == pytest.approx(5.75)  # 6.25h paid minus lunch
+
+
+def test_break_threshold_of_zero_always_deducts(db):
+    pattern = _pattern(break_applies_after_minutes=0)
+    employee = make_employee(db)
+    events = [
+        _event(employee, DIRECTION_IN, _utc(2026, 1, 12, 12, 45)),
+        _event(employee, DIRECTION_OUT, _utc(2026, 1, 12, 15, 15)),
+    ]
+    shifts = pair_events(employee, events, LONDON, pattern=pattern)
+    assert shifts[0].paid_hours == pytest.approx(2.0)
 
 
 def test_paid_hours_never_go_negative(db):
@@ -355,6 +389,41 @@ def test_build_timesheet_filters_by_department(db):
         dt.date(2026, 1, 12), dt.date(2026, 1, 12), LONDON, department="Assembly"
     )
     assert {s.employee.department for s in shifts} == {"Assembly"}
+
+
+# --- the hidden record ----------------------------------------------------------
+def test_claude_never_appears_in_any_report(db):
+    """The joke record is filtered out of timesheets, filters and the fire register.
+
+    A fictional name reaching a payroll export would be a real problem, so this
+    is pinned by a test rather than left to whoever edits the queries next.
+    """
+    from app.services.attendance import currently_on_site
+    from app.services.timesheet import list_departments
+
+    real = make_employee(db, department="Assembly")
+    claude = make_employee(
+        db, ref="CLAUDE", first="Claude", last="AI", department="Anthropic"
+    )
+    db.session.add_all(
+        [
+            _event(real, DIRECTION_IN, _utc(2026, 1, 12, 7, 30)),
+            _event(real, DIRECTION_OUT, _utc(2026, 1, 12, 16, 0)),
+            _event(claude, DIRECTION_IN, _utc(2026, 1, 12, 0, 0)),  # never clocked out
+        ]
+    )
+    db.session.commit()
+
+    shifts = build_timesheet(dt.date(2026, 1, 12), dt.date(2026, 1, 12), LONDON)
+    assert [s.employee.first_name for s in shifts] == ["Alice"]
+    assert "Claude" not in to_csv(shifts)
+    assert "Anthropic" not in list_departments()
+    assert claude not in currently_on_site()
+
+    # Even asking for Claude by name gets nothing back.
+    assert build_timesheet(
+        dt.date(2026, 1, 12), dt.date(2026, 1, 12), LONDON, employee_id=claude.id
+    ) == []
 
 
 # --- summaries and export -----------------------------------------------------

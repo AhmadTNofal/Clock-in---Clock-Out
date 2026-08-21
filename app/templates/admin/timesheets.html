@@ -136,7 +136,8 @@
     shift is paid to the shift end and marked as such; anything else is left blank &mdash; correct
     it with <a href="{{ url_for('admin.event_manual') }}">manual entry</a> before running payroll.
     Paid hours are clipped to the employee's <a href="{{ url_for('admin.shifts') }}">shift</a>,
-    counted in 15-minute steps, with the unpaid break deducted.</p>
+    counted in 15-minute steps, with the unpaid break deducted on attendances long
+    enough to include it.</p>
 {% else %}
 <div class="mf-card"><p class="mf-empty">No clocking activity in this period.</p></div>
 {% endif %}

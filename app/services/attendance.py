@@ -28,6 +28,7 @@ from ..models import (
     AttendanceEvent,
     Employee,
     utcnow,
+    visible_employee_clause,
 )
 
 
@@ -183,6 +184,8 @@ def void_event(event: AttendanceEvent, *, admin_id: int, reason: str) -> None:
 def currently_on_site() -> list[Employee]:
     """Employees whose latest event is a clock-in - the fire-register view."""
     employees = db.session.scalars(
-        select(Employee).where(Employee.is_active.is_(True)).order_by(Employee.first_name)
+        select(Employee)
+        .where(Employee.is_active.is_(True), visible_employee_clause())
+        .order_by(Employee.first_name)
     ).all()
     return [e for e in employees if is_clocked_in(e.id)]

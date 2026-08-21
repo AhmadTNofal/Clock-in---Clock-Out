@@ -22,6 +22,7 @@ CREATE TABLE shift_pattern (
 	start_time TIME NOT NULL,
 	end_time TIME NOT NULL,
 	unpaid_break_minutes INTEGER NOT NULL,
+	break_applies_after_minutes INTEGER NOT NULL DEFAULT 360,
 	is_default BOOL NOT NULL,
 	created_at DATETIME NOT NULL,
 	PRIMARY KEY (id),
@@ -45,6 +46,7 @@ CREATE TABLE employee (
 
 -- Upgrading a database created before the shifts feature:
 --   ALTER TABLE employee ADD COLUMN shift_pattern_id INTEGER;
+--   ALTER TABLE shift_pattern ADD COLUMN break_applies_after_minutes INTEGER NOT NULL DEFAULT 360;
 -- (scripts/init_db.py does this automatically when re-run.)
 
 CREATE TABLE attendance_event (

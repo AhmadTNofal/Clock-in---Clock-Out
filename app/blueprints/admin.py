@@ -37,6 +37,7 @@ from ..models import (
     AttendanceEvent,
     Employee,
     ShiftPattern,
+    visible_employee_clause,
 )
 from ..services import attendance
 from ..services.enrolment import enrol_employee, remove_enrolment
@@ -82,6 +83,14 @@ class ShiftPatternForm(FlaskForm):
         "Unpaid break (minutes)",
         default=0,
         validators=[NumberRange(min=0, max=480, message="Between 0 and 480 minutes.")],
+    )
+    break_applies_after_minutes = IntegerField(
+        "Deduct break only after (minutes worked)",
+        default=360,
+        validators=[
+            Optional(),
+            NumberRange(min=0, max=1440, message="Between 0 and 1440 minutes."),
+        ],
     )
     is_default = BooleanField("Default shift for employees without one assigned")
 
@@ -139,7 +148,9 @@ def _local_to_utc(raw: str) -> dt.datetime:
 
 def _employee_choices() -> list[tuple[int, str]]:
     employees = db.session.scalars(
-        select(Employee).order_by(Employee.last_name, Employee.first_name)
+        select(Employee)
+        .where(visible_employee_clause())
+        .order_by(Employee.last_name, Employee.first_name)
     ).all()
     return [(e.id, f"{e.last_name}, {e.first_name} ({e.payroll_ref})") for e in employees]
 
@@ -161,12 +172,15 @@ def dashboard():
 
     recent = db.session.scalars(
         select(AttendanceEvent)
-        .where(AttendanceEvent.is_voided.is_(False))
+        .join(Employee)
+        .where(AttendanceEvent.is_voided.is_(False), visible_employee_clause())
         .order_by(AttendanceEvent.occurred_at.desc())
         .limit(15)
     ).all()
 
-    employees = db.session.scalars(select(Employee)).all()
+    employees = db.session.scalars(
+        select(Employee).where(visible_employee_clause())
+    ).all()
     index = get_index()
 
     return render_template(
@@ -187,7 +201,11 @@ def dashboard():
 @bp.get("/employees")
 def employees():
     query = (request.args.get("q") or "").strip()
-    stmt = select(Employee).order_by(Employee.last_name, Employee.first_name)
+    stmt = (
+        select(Employee)
+        .where(visible_employee_clause())
+        .order_by(Employee.last_name, Employee.first_name)
+    )
     if query:
         like = f"%{query}%"
         stmt = stmt.where(
@@ -359,7 +377,9 @@ def timesheets():
         department=department,
         departments=list_departments(),
         employees=db.session.scalars(
-            select(Employee).order_by(Employee.last_name, Employee.first_name)
+            select(Employee)
+            .where(visible_employee_clause())
+            .order_by(Employee.last_name, Employee.first_name)
         ).all(),
     )
 
@@ -415,6 +435,8 @@ def _save_shift_pattern(form: ShiftPatternForm, pattern: ShiftPattern | None) ->
     pattern.start_time = form.start_time.data
     pattern.end_time = form.end_time.data
     pattern.unpaid_break_minutes = int(form.unpaid_break_minutes.data or 0)
+    threshold = form.break_applies_after_minutes.data
+    pattern.break_applies_after_minutes = 360 if threshold is None else int(threshold)
 
     if form.is_default.data:
         # Only one pattern can be the default at a time.

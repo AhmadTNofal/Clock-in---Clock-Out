@@ -65,6 +65,12 @@ class ShiftPattern(db.Model):
     start_time: Mapped[dt.time] = mapped_column(Time, nullable=False)
     end_time: Mapped[dt.time] = mapped_column(Time, nullable=False)
     unpaid_break_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The break is only deducted once the paid time exceeds this - a short
+    # morning or afternoon stint contains no lunch to deduct. 360 minutes
+    # matches the UK working-time rule on when a rest break is due.
+    break_applies_after_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=360
+    )
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
 
@@ -119,6 +125,41 @@ class Employee(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Employee {self.payroll_ref} {self.full_name}>"
+
+
+# --- a bit of fun -------------------------------------------------------------
+# Claude AI was clocked in once and is never clocked out. It is not a real
+# employee, so it is filtered out of every list, count and payroll figure: a
+# fictional name in a payroll export would be a genuine problem, joke or not.
+# Delete the row and this constant to remove it entirely.
+HIDDEN_EMPLOYEE_NAMES = frozenset({("claude", "ai")})
+
+
+def visible_employee_clause():
+    """SQL criterion excluding the joke records from any Employee query."""
+    from sqlalchemy import and_, func, not_, true
+
+    if not HIDDEN_EMPLOYEE_NAMES:
+        return true()
+    return and_(
+        *[
+            not_(
+                and_(
+                    func.lower(Employee.first_name) == first,
+                    func.lower(Employee.last_name) == last,
+                )
+            )
+            for first, last in HIDDEN_EMPLOYEE_NAMES
+        ]
+    )
+
+
+def is_hidden_employee(employee: Employee | None) -> bool:
+    """True for a record that never appears in reports, lists or counts."""
+    if employee is None:
+        return False
+    key = (employee.first_name.strip().lower(), employee.last_name.strip().lower())
+    return key in HIDDEN_EMPLOYEE_NAMES
 
 
 class FaceTemplate(db.Model):

@@ -16,6 +16,7 @@
                 <th>Start</th>
                 <th>End</th>
                 <th>Unpaid break</th>
+                <th>Break after</th>
                 <th>Default</th>
                 <th>Assigned to</th>
                 <th></th>
@@ -28,6 +29,7 @@
                 <td>{{ pattern.start_time.strftime('%H:%M') }}</td>
                 <td>{{ pattern.end_time.strftime('%H:%M') }}{% if pattern.crosses_midnight %} (next day){% endif %}</td>
                 <td>{{ pattern.unpaid_break_minutes }} min</td>
+                <td>{{ (pattern.break_applies_after_minutes / 60) | round(1) }} h worked</td>
                 <td>{% if pattern.is_default %}<span class="mf-badge">Default</span>{% endif %}</td>
                 <td>{{ pattern.employees | length }} employee(s)</td>
                 <td>
@@ -56,7 +58,7 @@
           novalidate>
         {{ form.csrf_token }}
 
-        {% for field in [form.name, form.start_time, form.end_time, form.unpaid_break_minutes] %}
+        {% for field in [form.name, form.start_time, form.end_time, form.unpaid_break_minutes, form.break_applies_after_minutes] %}
         <div class="mf-field">
             {{ field.label }}
             {{ field() }}
@@ -68,7 +70,9 @@
             {{ form.is_default() }} {{ form.is_default.label }}
         </div>
         <p class="mf-note">An end time at or before the start time means the shift runs overnight.
-            The unpaid break is deducted from every completed shift.</p>
+            The unpaid break is only deducted once someone's paid time exceeds the
+            "deduct break only after" threshold &mdash; so a short morning or afternoon
+            stint keeps its full hours. Set the threshold to 0 to always deduct it.</p>
 
         <div class="mf-btn-row">
             <button class="mf-btn" type="submit">{{ 'Save changes' if editing else 'Add shift' }}</button>
