@@ -48,6 +48,7 @@ from ..services.timesheet import (
     summarise,
     to_csv,
     to_local,
+    to_master_csv,
 )
 
 bp = Blueprint("admin", __name__, url_prefix="/admin")
@@ -372,6 +373,21 @@ def timesheets_csv():
     filename = f"timesheet_{start.isoformat()}_to_{end.isoformat()}.csv"
     return Response(
         to_csv(shifts),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@bp.get("/timesheets/master.csv")
+def timesheets_master_csv():
+    """One line per person with total paid hours - the payroll master sheet."""
+    start, end, employee_id, department, tz = _timesheet_args()
+    shifts = build_timesheet(
+        start, end, tz, employee_id=employee_id, department=department
+    )
+    filename = f"master_sheet_{start.isoformat()}_to_{end.isoformat()}.csv"
+    return Response(
+        to_master_csv(summarise(shifts)),
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

@@ -323,6 +323,15 @@ def test_timesheet_csv_downloads(logged_in, db):
     assert b"Payroll ref" in response.data
 
 
+def test_master_sheet_csv_downloads(logged_in, db):
+    make_employee(db)
+    response = logged_in.get("/admin/timesheets/master.csv?start=2026-01-01&end=2026-01-31")
+    assert response.status_code == 200
+    assert response.mimetype == "text/csv"
+    assert "master_sheet" in response.headers["Content-Disposition"]
+    assert b"Paid hours" in response.data
+
+
 def test_duplicate_payroll_ref_is_rejected(logged_in, db):
     make_employee(db, ref="E001")
     response = logged_in.post(

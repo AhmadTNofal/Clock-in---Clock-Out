@@ -38,14 +38,18 @@
         </div>
         <button class="mf-btn" type="submit">Show</button>
         <a class="mf-btn mf-btn-secondary"
+           href="{{ url_for('admin.timesheets_master_csv', start=start.isoformat(), end=end.isoformat(), employee_id=employee_id or '', department=department or '') }}">
+            Master sheet (CSV)
+        </a>
+        <a class="mf-btn mf-btn-secondary"
            href="{{ url_for('admin.timesheets_csv', start=start.isoformat(), end=end.isoformat(), employee_id=employee_id or '', department=department or '') }}">
-            Download CSV
+            Full detail (CSV)
         </a>
     </form>
 </div>
 
 {% if totals %}
-<h2>Totals</h2>
+<h2>Master sheet</h2>
 <div class="mf-table-wrap">
     <table class="mf-table">
         <thead>
@@ -57,6 +61,7 @@
                 <th>Clocked hours</th>
                 <th>Paid hours</th>
                 <th>Needs attention</th>
+                <th></th>
             </tr>
         </thead>
         <tbody>
@@ -68,11 +73,15 @@
                 <td>{{ total.shifts }}</td>
                 <td>{{ total.hours | hoursmins }} <span class="mf-note">({{ '%.2f' | format(total.hours) }})</span></td>
                 <td><strong>{{ total.paid_hours | hoursmins }}</strong> <span class="mf-note">({{ '%.2f' | format(total.paid_hours) }})</span></td>
-                <td>
+                <td class="mf-wrap">
                     {% if total.issues %}
                     <span class="mf-badge mf-badge-warn">{{ total.issues }} row(s)</span>
+                    {% for detail in total.issue_details %}
+                    <div class="mf-note">{{ detail }}</div>
+                    {% endfor %}
                     {% endif %}
                 </td>
+                <td><a href="{{ url_for('admin.timesheets', start=start.isoformat(), end=end.isoformat(), employee_id=total.employee.id) }}">Day by day</a></td>
             </tr>
             {% endfor %}
         </tbody>
@@ -81,6 +90,7 @@
                 <td colspan="4">All employees shown</td>
                 <td>{{ (totals | sum(attribute='hours')) | round(2) | hoursmins }}</td>
                 <td>{{ (totals | sum(attribute='paid_hours')) | round(2) | hoursmins }}</td>
+                <td></td>
                 <td></td>
             </tr>
         </tfoot>
@@ -113,18 +123,18 @@
                 <td>{{ shift.end_local.strftime('%H:%M') if shift.end_local else '&mdash;' | safe }}</td>
                 <td>{{ shift.hours | hoursmins if shift.hours is not none else '' }}</td>
                 <td>{{ shift.pattern.name if shift.pattern else '' }}</td>
-                <td>{{ shift.paid_start_local.strftime('%H:%M') if shift.is_complete and shift.paid_start_local else '' }}</td>
-                <td>{{ shift.paid_end_local.strftime('%H:%M') if shift.is_complete and shift.paid_end_local else '' }}</td>
+                <td>{{ shift.paid_start_local.strftime('%H:%M') if shift.paid_hours is not none and shift.paid_start_local else '' }}</td>
+                <td>{{ shift.paid_end_local.strftime('%H:%M') if shift.paid_hours is not none and shift.paid_end_local else '' }}</td>
                 <td>{{ shift.paid_hours | hoursmins if shift.paid_hours is not none else '' }}</td>
-                <td class="mf-wrap">{{ shift.issue or '' }}</td>
+                <td class="mf-wrap">{{ shift.display_issue or '' }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
-<p class="mf-note">Highlighted rows are unpaired entries. Hours are left blank rather than
-    estimated &mdash; correct them with
-    <a href="{{ url_for('admin.event_manual') }}">manual entry</a> before running payroll.
+<p class="mf-note">Highlighted rows are unpaired entries. A missing clock-out on a finished
+    shift is paid to the shift end and marked as such; anything else is left blank &mdash; correct
+    it with <a href="{{ url_for('admin.event_manual') }}">manual entry</a> before running payroll.
     Paid hours are clipped to the employee's <a href="{{ url_for('admin.shifts') }}">shift</a>,
     counted in 15-minute steps, with the unpaid break deducted.</p>
 {% else %}

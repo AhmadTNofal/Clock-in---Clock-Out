@@ -5,9 +5,11 @@ reporting, so the twice-yearly BST/GMT change cannot corrupt stored data. A
 shift is credited to the local date it *started*, which keeps a night shift
 crossing midnight on one line instead of split across two days.
 
-Unpaired events are reported, never guessed at. If somebody forgot to clock out,
-the row says so and the hours are left blank for a human to settle - inventing a
-leaving time would put a wrong figure into someone's pay.
+Unpaired events are always flagged. If somebody forgot to clock out and they are
+on a shift whose end has already passed, they are assumed to have left at the
+shift end - the paid figure uses that and the row says so, so payroll is not
+held up by one forgotten scan. Without a shift (or while the shift is still
+running) nothing is invented and the hours are left blank for a human to settle.
 
 Paid hours are derived from actual hours by three rules, applied in this order:
 the worked period is clipped to the employee's shift band (clock in early, paid
@@ -22,7 +24,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -139,6 +141,27 @@ class Shift:
         return band_start, band_end
 
     @property
+    def end_is_assumed(self) -> bool:
+        """True when a missing clock-out is stood in for by the shift end.
+
+        Only once the shift end has actually passed: somebody still on site
+        mid-shift genuinely has no leaving time yet, assumed or otherwise.
+        """
+        if self.clock_out is not None or self.clock_in is None:
+            return False
+        band = self._band()
+        return band is not None and band[1] <= dt.datetime.now(self.tz)
+
+    @property
+    def effective_end_local(self) -> dt.datetime | None:
+        """The recorded clock-out, or the shift end when one can be assumed."""
+        if self.end_local is not None:
+            return self.end_local
+        if self.end_is_assumed:
+            return self._band()[1]  # type: ignore[index]
+        return None
+
+    @property
     def paid_start_local(self) -> dt.datetime | None:
         if self.start_local is None:
             return None
@@ -148,22 +171,37 @@ class Shift:
 
     @property
     def paid_end_local(self) -> dt.datetime | None:
-        if self.end_local is None:
+        end = self.effective_end_local
+        if end is None:
             return None
         band = self._band()
-        end = min(self.end_local, band[1]) if band else self.end_local
+        if band:
+            end = min(end, band[1])
         return round_back(end)
 
     @property
     def paid_hours(self) -> float | None:
         """Hours to pay: band-clipped, grid-snapped, unpaid break deducted."""
-        if self.duration is None:
-            return None
+        if self.is_complete and self.duration is None:
+            return None  # clock-out precedes clock-in - a correction is needed
         start, end = self.paid_start_local, self.paid_end_local
-        seconds = (end - start).total_seconds()  # type: ignore[operator]
+        if start is None or end is None:
+            return None
+        seconds = (end - start).total_seconds()
         if self.pattern is not None:
             seconds -= self.pattern.unpaid_break_minutes * 60
         return round(max(0.0, seconds) / 3600.0, 2)
+
+    @property
+    def display_issue(self) -> str | None:
+        """The issue text, noting when the paid figure assumes the shift end."""
+        if self.end_is_assumed:
+            end = self._band()[1]  # type: ignore[index]
+            return (
+                "Did not clock out - assumed finished at their normal time "
+                f"({end.strftime('%H:%M')})"
+            )
+        return self.issue
 
 
 def pair_events(
@@ -284,10 +322,15 @@ class EmployeeTotal:
     paid_hours: float
     shifts: int
     issues: int
+    issue_details: list[str] = field(default_factory=list)
 
 
 def summarise(shifts: list[Shift]) -> list[EmployeeTotal]:
-    """Total hours per employee, with a count of rows needing attention."""
+    """Total hours per employee, with the exact rows needing attention.
+
+    Each detail names the day and what is wrong, so management can spot a
+    discrepancy on the master sheet without opening every timesheet.
+    """
     buckets: dict[int, EmployeeTotal] = {}
     for shift in shifts:
         total = buckets.get(shift.employee.id)
@@ -301,6 +344,8 @@ def summarise(shifts: list[Shift]) -> list[EmployeeTotal]:
             total.paid_hours = round(total.paid_hours + shift.paid_hours, 2)
         if shift.issue:
             total.issues += 1
+            day = shift.date.strftime("%a %d/%m") if shift.date else "unknown day"
+            total.issue_details.append(f"{day}: {shift.display_issue}")
     return sorted(
         buckets.values(), key=lambda t: (t.employee.last_name, t.employee.first_name)
     )
@@ -330,8 +375,8 @@ def to_csv(shifts: list[Shift]) -> str:
     for shift in shifts:
         start = shift.start_local
         end = shift.end_local
-        paid_start = shift.paid_start_local if shift.is_complete else None
-        paid_end = shift.paid_end_local if shift.is_complete else None
+        paid_start = shift.paid_start_local if shift.paid_hours is not None else None
+        paid_end = shift.paid_end_local if shift.paid_hours is not None else None
         writer.writerow(
             [
                 shift.employee.payroll_ref,
@@ -346,7 +391,43 @@ def to_csv(shifts: list[Shift]) -> str:
                 paid_start.strftime("%H:%M") if paid_start else "",
                 paid_end.strftime("%H:%M") if paid_end else "",
                 f"{shift.paid_hours:.2f}" if shift.paid_hours is not None else "",
-                shift.issue or "",
+                shift.display_issue or "",
+            ]
+        )
+    return buffer.getvalue()
+
+
+def to_master_csv(totals: list[EmployeeTotal]) -> str:
+    """One line per person with their total paid hours - the payroll master sheet.
+
+    Deliberately terse: management scan this for anything that looks wrong, then
+    open that person's individual timesheet for the day-by-day detail.
+    """
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(
+        [
+            "Payroll ref",
+            "Surname",
+            "First name",
+            "Department",
+            "Shift",
+            "Clocked hours",
+            "Paid hours",
+            "Rows needing attention",
+        ]
+    )
+    for total in totals:
+        writer.writerow(
+            [
+                total.employee.payroll_ref,
+                total.employee.last_name,
+                total.employee.first_name,
+                total.employee.department or "",
+                total.employee.shift_pattern.name if total.employee.shift_pattern else "",
+                f"{total.hours:.2f}",
+                f"{total.paid_hours:.2f}",
+                "; ".join(total.issue_details),
             ]
         )
     return buffer.getvalue()

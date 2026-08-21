@@ -28,8 +28,9 @@ no GPU, and nothing to install beyond `pip install -r requirements.txt`.
 - Enrolment: capture several face samples through the browser, with checks that
   they are all the same person and not somebody already enrolled.
 - Timesheets: date range (defaults to the last four weeks), department and
-  per-employee filters, clocked and paid hours per shift, totals, CSV export
-  for payroll.
+  per-employee filters, clocked and paid hours per shift, day-by-day drill-down
+  per person, and two CSV exports — a one-line-per-person master sheet for
+  payroll and the full daily detail.
 - Shifts: paid time bands (e.g. 07:30–16:00 with a 30-minute unpaid lunch).
   Clocking in early pays from the shift start, clocking out late pays to the
   shift end, and pay is counted in 15-minute steps — a 07:34 arrival is paid
@@ -635,9 +636,10 @@ Design decisions worth knowing:
   local date it started, keeping night shifts on one line.
 - **The event log is append-only.** A wrong entry is voided, never overwritten,
   and a correction is added — so the audit trail survives.
-- **Unpaired entries are flagged, never guessed.** If somebody forgot to clock
-  out, the timesheet says so and leaves the hours blank. Inventing a leaving
-  time would put a wrong figure into someone's pay.
+- **Unpaired entries are always flagged.** If somebody forgot to clock out on a
+  shift that has already ended, the paid hours assume they left at the shift end
+  and the row says so. Without a shift, or while the shift is still running,
+  the hours are left blank for a human to settle.
 - **Matching is a linear scan** — one matrix-vector product against every
   template. At small-manufacturer headcount this is sub-millisecond, and it
   avoids an approximate-nearest-neighbour index that would need maintaining.

@@ -258,15 +258,6 @@ def test_overnight_pattern_spans_midnight(db):
     assert shifts[0].paid_hours == pytest.approx(8.0)
 
 
-def test_incomplete_shift_has_no_paid_hours(db):
-    employee = make_employee(db)
-    shifts = pair_events(
-        employee, [_event(employee, DIRECTION_IN, _utc(2026, 1, 12, 7, 30))],
-        LONDON, pattern=_pattern(),
-    )
-    assert shifts[0].paid_hours is None
-
-
 def test_build_timesheet_applies_default_and_assigned_patterns(db):
     default = _pattern(name="Days", is_default=True)
     earlies = _pattern(
@@ -296,6 +287,55 @@ def test_build_timesheet_applies_default_and_assigned_patterns(db):
     assert by_name["Bob"].pattern.name == "Earlies"
     assert by_name["Bob"].paid_start_local.strftime("%H:%M") == "06:00"
     assert by_name["Bob"].paid_hours == pytest.approx(8.0)
+
+
+def test_missing_clock_out_on_a_finished_shift_is_paid_to_shift_end(db):
+    """Forgot to scan out: pay to the shift end and say so on the row."""
+    employee = make_employee(db)
+    events = [_event(employee, DIRECTION_IN, _utc(2026, 1, 12, 7, 30))]
+    shifts = pair_events(employee, events, LONDON, pattern=_pattern())
+
+    assert shifts[0].end_is_assumed
+    assert shifts[0].end_local is None  # the record itself is not invented
+    assert shifts[0].hours is None  # actual hours stay blank
+    assert shifts[0].paid_end_local.strftime("%H:%M") == "16:00"
+    assert shifts[0].paid_hours == pytest.approx(8.0)
+    assert shifts[0].display_issue == (
+        "Did not clock out - assumed finished at their normal time (16:00)"
+    )
+
+
+def test_no_assumption_while_the_shift_is_still_running(db):
+    """A clock-in on a shift that has not ended yet is genuinely still open."""
+    employee = make_employee(db)
+    events = [_event(employee, DIRECTION_IN, _utc(2030, 1, 14, 7, 30))]
+    shifts = pair_events(employee, events, LONDON, pattern=_pattern())
+
+    assert not shifts[0].end_is_assumed
+    assert shifts[0].paid_hours is None
+    assert shifts[0].display_issue == "Still clocked in"
+
+
+def test_no_assumption_without_a_shift_pattern(db):
+    """With no shift there is no end time to assume, so nothing is invented."""
+    employee = make_employee(db)
+    events = [_event(employee, DIRECTION_IN, _utc(2026, 1, 12, 7, 30))]
+    shifts = pair_events(employee, events, LONDON)
+
+    assert not shifts[0].end_is_assumed
+    assert shifts[0].paid_hours is None
+
+
+def test_orphan_clock_out_is_never_assumed_a_start(db):
+    employee = make_employee(db)
+    shifts = pair_events(
+        employee,
+        [_event(employee, DIRECTION_OUT, _utc(2026, 1, 12, 16, 0))],
+        LONDON,
+        pattern=_pattern(),
+    )
+    assert shifts[0].paid_hours is None
+    assert shifts[0].display_issue == "No clock-in recorded"
 
 
 def test_build_timesheet_filters_by_department(db):
@@ -356,3 +396,25 @@ def test_csv_leaves_hours_blank_for_an_unpaired_shift(db):
     row = to_csv(pair_events(employee, events, LONDON)).strip().split("\r\n")[1]
     assert row.endswith("Still clocked in")
     assert ",," in row  # blank clock-out and blank hours
+
+
+def test_master_csv_has_one_line_per_person_with_paid_totals(db):
+    from app.services.timesheet import to_master_csv
+
+    employee = make_employee(db, ref="E010", first="Nia", last="Owens")
+    events = [
+        _event(employee, DIRECTION_IN, _utc(2026, 1, 12, 7, 34)),
+        _event(employee, DIRECTION_OUT, _utc(2026, 1, 12, 16, 0)),
+        _event(employee, DIRECTION_IN, _utc(2026, 1, 13, 7, 30)),
+        _event(employee, DIRECTION_OUT, _utc(2026, 1, 13, 16, 0)),
+        _event(employee, DIRECTION_IN, _utc(2026, 1, 14, 7, 30)),  # never clocked out
+    ]
+    totals = summarise(pair_events(employee, events, LONDON, pattern=_pattern()))
+    lines = to_master_csv(totals).strip().split("\r\n")
+
+    assert lines[0].startswith("Payroll ref,Surname,First name,Department")
+    assert len(lines) == 2  # one person, one line
+    assert "E010" in lines[1]
+    assert "23.75" in lines[1]  # 7.75 + 8.00 + 8.00 (assumed) paid hours
+    # The attention column names the exact shift and what is wrong with it.
+    assert "Wed 14/01: Did not clock out - assumed finished at their normal time (16:00)" in lines[1]
