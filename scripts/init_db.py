@@ -21,13 +21,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import create_engine, select, text  # noqa: E402
+import datetime as dt  # noqa: E402
+
+from sqlalchemy import create_engine, inspect, select, text  # noqa: E402
 from sqlalchemy.engine import URL  # noqa: E402
 
 from app import create_app  # noqa: E402
 from app.config import get_config  # noqa: E402
 from app.extensions import db  # noqa: E402
-from app.models import AdminUser  # noqa: E402
+from app.models import AdminUser, ShiftPattern  # noqa: E402
 
 
 def create_database(config, root_user: str | None, root_password: str | None) -> None:
@@ -57,6 +59,38 @@ def create_database(config, root_user: str | None, root_password: str | None) ->
         )
     engine.dispose()
     print(f"Database `{name}` present.")
+
+
+def upgrade_existing_tables() -> None:
+    """Add columns that create_all cannot add to tables that already exist.
+
+    Databases created before the shifts feature lack employee.shift_pattern_id.
+    ADD COLUMN works on both MySQL and SQLite; the foreign key is enforced by
+    the application for upgraded databases (fresh installs get the constraint
+    from create_all).
+    """
+    columns = {c["name"] for c in inspect(db.engine).get_columns("employee")}
+    if "shift_pattern_id" not in columns:
+        db.session.execute(text("ALTER TABLE employee ADD COLUMN shift_pattern_id INTEGER"))
+        db.session.commit()
+        print("Added employee.shift_pattern_id column.")
+
+
+def seed_default_shift() -> None:
+    """Create the standard day shift once; never touch existing patterns."""
+    if db.session.scalars(select(ShiftPattern)).first() is not None:
+        return
+    db.session.add(
+        ShiftPattern(
+            name="Standard day",
+            start_time=dt.time(7, 30),
+            end_time=dt.time(16, 0),
+            unpaid_break_minutes=30,
+            is_default=True,
+        )
+    )
+    db.session.commit()
+    print("Seeded default shift 'Standard day' (07:30-16:00, 30 min unpaid lunch).")
 
 
 def create_admin(username: str) -> None:
@@ -102,6 +136,8 @@ def main() -> int:
     with app.app_context():
         db.create_all()
         print("Tables created (existing tables untouched).")
+        upgrade_existing_tables()
+        seed_default_shift()
         if args.admin:
             create_admin(args.admin)
 

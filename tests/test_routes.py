@@ -253,11 +253,65 @@ def test_admin_pages_render(logged_in, db):
         f"/admin/employees/{employee.id}/edit",
         f"/admin/employees/{employee.id}/enrol",
         "/admin/timesheets",
+        "/admin/shifts",
         "/admin/events/manual",
         "/admin/camera-check",
     ):
         response = logged_in.get(path)
         assert response.status_code == 200, f"{path} returned {response.status_code}"
+
+
+def test_shift_pattern_can_be_added_edited_and_deleted(logged_in, db):
+    from app.models import ShiftPattern
+
+    response = logged_in.post(
+        "/admin/shifts",
+        data={
+            "name": "Standard day",
+            "start_time": "07:30",
+            "end_time": "16:00",
+            "unpaid_break_minutes": "30",
+            "is_default": "y",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    pattern = db.session.query(ShiftPattern).one()
+    assert pattern.is_default
+    assert pattern.unpaid_break_minutes == 30
+
+    response = logged_in.post(
+        f"/admin/shifts/{pattern.id}/edit",
+        data={
+            "name": "Standard day",
+            "start_time": "07:30",
+            "end_time": "16:30",
+            "unpaid_break_minutes": "30",
+            "is_default": "y",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert pattern.end_time.strftime("%H:%M") == "16:30"
+
+    response = logged_in.post(f"/admin/shifts/{pattern.id}/delete", follow_redirects=True)
+    assert response.status_code == 200
+    assert db.session.query(ShiftPattern).count() == 0
+
+
+def test_duplicate_shift_name_is_rejected(logged_in, db):
+    from app.models import ShiftPattern
+
+    data = {
+        "name": "Standard day",
+        "start_time": "07:30",
+        "end_time": "16:00",
+        "unpaid_break_minutes": "30",
+    }
+    logged_in.post("/admin/shifts", data=data, follow_redirects=True)
+    response = logged_in.post("/admin/shifts", data=data, follow_redirects=True)
+    assert b"already exists" in response.data
+    assert db.session.query(ShiftPattern).count() == 1
 
 
 def test_timesheet_csv_downloads(logged_in, db):

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Shifts &mdash; {{ app_name }}{% endblock %}
+
+{% block content %}
+<h1>Shifts</h1>
+<p class="mf-subtitle">Paid time bands. Clocking in early pays from the shift start; clocking
+    out late pays to the shift end. Pay is counted in 15-minute steps &mdash; a 07:34 arrival is
+    paid from 07:45.</p>
+
+{% if patterns %}
+<div class="mf-table-wrap">
+    <table class="mf-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Unpaid break</th>
+                <th>Default</th>
+                <th>Assigned to</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for pattern in patterns %}
+            <tr>
+                <td>{{ pattern.name }}</td>
+                <td>{{ pattern.start_time.strftime('%H:%M') }}</td>
+                <td>{{ pattern.end_time.strftime('%H:%M') }}{% if pattern.crosses_midnight %} (next day){% endif %}</td>
+                <td>{{ pattern.unpaid_break_minutes }} min</td>
+                <td>{% if pattern.is_default %}<span class="mf-badge">Default</span>{% endif %}</td>
+                <td>{{ pattern.employees | length }} employee(s)</td>
+                <td>
+                    <a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.shift_edit', pattern_id=pattern.id) }}">Edit</a>
+                    <form method="post" action="{{ url_for('admin.shift_delete', pattern_id=pattern.id) }}"
+                          style="display:inline"
+                          onsubmit="return confirm('Delete shift {{ pattern.name }}? Anyone assigned to it will use the default shift.');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="mf-btn mf-btn-secondary" type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="mf-card"><p class="mf-empty">No shifts defined yet. Without one, timesheets pay the
+    actual clocked times (still in 15-minute steps).</p></div>
+{% endif %}
+
+<h2>{{ 'Edit ' + editing.name if editing else 'Add a shift' }}</h2>
+<div class="mf-card" style="max-width: 34rem;">
+    <form method="post"
+          action="{{ url_for('admin.shift_edit', pattern_id=editing.id) if editing else url_for('admin.shifts') }}"
+          novalidate>
+        {{ form.csrf_token }}
+
+        {% for field in [form.name, form.start_time, form.end_time, form.unpaid_break_minutes] %}
+        <div class="mf-field">
+            {{ field.label }}
+            {{ field() }}
+            {% for error in field.errors %}<div class="mf-error">{{ error }}</div>{% endfor %}
+        </div>
+        {% endfor %}
+
+        <div class="mf-field mf-checkbox">
+            {{ form.is_default() }} {{ form.is_default.label }}
+        </div>
+        <p class="mf-note">An end time at or before the start time means the shift runs overnight.
+            The unpaid break is deducted from every completed shift.</p>
+
+        <div class="mf-btn-row">
+            <button class="mf-btn" type="submit">{{ 'Save changes' if editing else 'Add shift' }}</button>
+            {% if editing %}
+            <a class="mf-btn mf-btn-secondary" href="{{ url_for('admin.shifts') }}">Cancel</a>
+            {% endif %}
+        </div>
+    </form>
+</div>
+{% endblock %}

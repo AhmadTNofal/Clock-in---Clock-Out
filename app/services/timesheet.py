@@ -8,6 +8,13 @@ crossing midnight on one line instead of split across two days.
 Unpaired events are reported, never guessed at. If somebody forgot to clock out,
 the row says so and the hours are left blank for a human to settle - inventing a
 leaving time would put a wrong figure into someone's pay.
+
+Paid hours are derived from actual hours by three rules, applied in this order:
+the worked period is clipped to the employee's shift band (clock in early, paid
+from the shift start; clock out late, paid to the shift end), the clipped times
+are snapped to the 15-minute pay grid (in rounds forward, out rounds back, so
+07:34 is paid from 07:45), and the shift's unpaid break is deducted. Actual
+times are always shown alongside so nothing is hidden from whoever runs payroll.
 """
 
 from __future__ import annotations
@@ -21,7 +28,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from ..extensions import db
-from ..models import DIRECTION_IN, DIRECTION_OUT, AttendanceEvent, Employee
+from ..models import DIRECTION_IN, DIRECTION_OUT, AttendanceEvent, Employee, ShiftPattern
+
+PAY_INTERVAL = dt.timedelta(minutes=15)
 
 
 def get_timezone(name: str) -> ZoneInfo:
@@ -58,6 +67,25 @@ def local_range_bounds(
     return first, last
 
 
+def round_forward(moment: dt.datetime) -> dt.datetime:
+    """Snap forward to the next pay-grid boundary (07:34 -> 07:45)."""
+    anchor = moment.replace(minute=0, second=0, microsecond=0)
+    intervals = -((anchor - moment) // PAY_INTERVAL)  # ceiling division
+    return anchor + intervals * PAY_INTERVAL
+
+
+def round_back(moment: dt.datetime) -> dt.datetime:
+    """Snap back to the previous pay-grid boundary (16:07 -> 16:00)."""
+    anchor = moment.replace(minute=0, second=0, microsecond=0)
+    return anchor + ((moment - anchor) // PAY_INTERVAL) * PAY_INTERVAL
+
+
+def get_default_pattern() -> ShiftPattern | None:
+    return db.session.scalars(
+        select(ShiftPattern).where(ShiftPattern.is_default.is_(True))
+    ).first()
+
+
 @dataclass
 class Shift:
     """One clock-in paired with its clock-out, if there is one."""
@@ -67,6 +95,7 @@ class Shift:
     clock_out: AttendanceEvent | None
     tz: ZoneInfo
     issue: str | None = None
+    pattern: ShiftPattern | None = None
 
     @property
     def start_local(self) -> dt.datetime | None:
@@ -97,8 +126,52 @@ class Shift:
         duration = self.duration
         return round(duration.total_seconds() / 3600.0, 2) if duration else None
 
+    # --- paid time ----------------------------------------------------------
+    def _band(self) -> tuple[dt.datetime, dt.datetime] | None:
+        """The paid time band for this shift's local day, or None if no pattern."""
+        anchor = self.start_local or self.end_local
+        if self.pattern is None or anchor is None:
+            return None
+        day = anchor.date()
+        band_start = dt.datetime.combine(day, self.pattern.start_time, tzinfo=self.tz)
+        end_day = day + dt.timedelta(days=1) if self.pattern.crosses_midnight else day
+        band_end = dt.datetime.combine(end_day, self.pattern.end_time, tzinfo=self.tz)
+        return band_start, band_end
 
-def pair_events(employee: Employee, events: list[AttendanceEvent], tz: ZoneInfo) -> list[Shift]:
+    @property
+    def paid_start_local(self) -> dt.datetime | None:
+        if self.start_local is None:
+            return None
+        band = self._band()
+        start = max(self.start_local, band[0]) if band else self.start_local
+        return round_forward(start)
+
+    @property
+    def paid_end_local(self) -> dt.datetime | None:
+        if self.end_local is None:
+            return None
+        band = self._band()
+        end = min(self.end_local, band[1]) if band else self.end_local
+        return round_back(end)
+
+    @property
+    def paid_hours(self) -> float | None:
+        """Hours to pay: band-clipped, grid-snapped, unpaid break deducted."""
+        if self.duration is None:
+            return None
+        start, end = self.paid_start_local, self.paid_end_local
+        seconds = (end - start).total_seconds()  # type: ignore[operator]
+        if self.pattern is not None:
+            seconds -= self.pattern.unpaid_break_minutes * 60
+        return round(max(0.0, seconds) / 3600.0, 2)
+
+
+def pair_events(
+    employee: Employee,
+    events: list[AttendanceEvent],
+    tz: ZoneInfo,
+    pattern: ShiftPattern | None = None,
+) -> list[Shift]:
     """Pair a chronological event list into shifts.
 
     The log is a plain alternating sequence in the normal case. The two ways it
@@ -115,23 +188,39 @@ def pair_events(employee: Employee, events: list[AttendanceEvent], tz: ZoneInfo)
         if event.direction == DIRECTION_IN:
             if open_in is not None:
                 shifts.append(
-                    Shift(employee, open_in, None, tz, issue="No clock-out recorded")
+                    Shift(
+                        employee,
+                        open_in,
+                        None,
+                        tz,
+                        issue="No clock-out recorded",
+                        pattern=pattern,
+                    )
                 )
             open_in = event
         elif event.direction == DIRECTION_OUT:
             if open_in is None:
                 shifts.append(
-                    Shift(employee, None, event, tz, issue="No clock-in recorded")
+                    Shift(
+                        employee,
+                        None,
+                        event,
+                        tz,
+                        issue="No clock-in recorded",
+                        pattern=pattern,
+                    )
                 )
             else:
-                shift = Shift(employee, open_in, event, tz)
+                shift = Shift(employee, open_in, event, tz, pattern=pattern)
                 if shift.duration is None:
                     shift.issue = "Clock-out precedes clock-in"
                 shifts.append(shift)
                 open_in = None
 
     if open_in is not None:
-        shifts.append(Shift(employee, open_in, None, tz, issue="Still clocked in"))
+        shifts.append(
+            Shift(employee, open_in, None, tz, issue="Still clocked in", pattern=pattern)
+        )
 
     return shifts
 
@@ -142,6 +231,7 @@ def build_timesheet(
     tz: ZoneInfo,
     *,
     employee_id: int | None = None,
+    department: str | None = None,
     include_inactive: bool = False,
 ) -> list[Shift]:
     """Build shifts for a local date range, ordered by employee then time."""
@@ -150,10 +240,14 @@ def build_timesheet(
     employee_stmt = select(Employee).order_by(Employee.last_name, Employee.first_name)
     if employee_id is not None:
         employee_stmt = employee_stmt.where(Employee.id == employee_id)
-    elif not include_inactive:
-        employee_stmt = employee_stmt.where(Employee.is_active.is_(True))
+    else:
+        if not include_inactive:
+            employee_stmt = employee_stmt.where(Employee.is_active.is_(True))
+        if department:
+            employee_stmt = employee_stmt.where(Employee.department == department)
     employees = db.session.scalars(employee_stmt).all()
 
+    default_pattern = get_default_pattern()
     shifts: list[Shift] = []
     for employee in employees:
         events = db.session.scalars(
@@ -166,15 +260,28 @@ def build_timesheet(
             )
             .order_by(AttendanceEvent.occurred_at, AttendanceEvent.id)
         ).all()
-        shifts.extend(pair_events(employee, list(events), tz))
+        pattern = employee.shift_pattern or default_pattern
+        shifts.extend(pair_events(employee, list(events), tz, pattern=pattern))
 
     return shifts
+
+
+def list_departments() -> list[str]:
+    """Distinct non-empty department names, for the timesheet filter."""
+    rows = db.session.scalars(
+        select(Employee.department)
+        .where(Employee.department.is_not(None))
+        .distinct()
+        .order_by(Employee.department)
+    ).all()
+    return [row for row in rows if row]
 
 
 @dataclass
 class EmployeeTotal:
     employee: Employee
     hours: float
+    paid_hours: float
     shifts: int
     issues: int
 
@@ -185,11 +292,13 @@ def summarise(shifts: list[Shift]) -> list[EmployeeTotal]:
     for shift in shifts:
         total = buckets.get(shift.employee.id)
         if total is None:
-            total = EmployeeTotal(shift.employee, 0.0, 0, 0)
+            total = EmployeeTotal(shift.employee, 0.0, 0.0, 0, 0)
             buckets[shift.employee.id] = total
         if shift.hours is not None:
             total.hours = round(total.hours + shift.hours, 2)
             total.shifts += 1
+        if shift.paid_hours is not None:
+            total.paid_hours = round(total.paid_hours + shift.paid_hours, 2)
         if shift.issue:
             total.issues += 1
     return sorted(
@@ -211,12 +320,18 @@ def to_csv(shifts: list[Shift]) -> str:
             "Clock in",
             "Clock out",
             "Hours",
+            "Shift",
+            "Paid from",
+            "Paid to",
+            "Paid hours",
             "Notes",
         ]
     )
     for shift in shifts:
         start = shift.start_local
         end = shift.end_local
+        paid_start = shift.paid_start_local if shift.is_complete else None
+        paid_end = shift.paid_end_local if shift.is_complete else None
         writer.writerow(
             [
                 shift.employee.payroll_ref,
@@ -227,6 +342,10 @@ def to_csv(shifts: list[Shift]) -> str:
                 start.strftime("%H:%M") if start else "",
                 end.strftime("%H:%M") if end else "",
                 f"{shift.hours:.2f}" if shift.hours is not None else "",
+                shift.pattern.name if shift.pattern else "",
+                paid_start.strftime("%H:%M") if paid_start else "",
+                paid_end.strftime("%H:%M") if paid_end else "",
+                f"{shift.paid_hours:.2f}" if shift.paid_hours is not None else "",
                 shift.issue or "",
             ]
         )

@@ -18,8 +18,15 @@ from flask import (
 from flask_login import current_user, login_required
 from flask_wtf import FlaskForm
 from sqlalchemy import select
-from wtforms import BooleanField, SelectField, StringField, TextAreaField
-from wtforms.validators import DataRequired, Email, Length, Optional
+from wtforms import (
+    BooleanField,
+    IntegerField,
+    SelectField,
+    StringField,
+    TextAreaField,
+    TimeField,
+)
+from wtforms.validators import DataRequired, Email, Length, NumberRange, Optional
 
 from ..extensions import db
 from ..models import (
@@ -29,6 +36,7 @@ from ..models import (
     METHOD_MANUAL,
     AttendanceEvent,
     Employee,
+    ShiftPattern,
 )
 from ..services import attendance
 from ..services.enrolment import enrol_employee, remove_enrolment
@@ -36,6 +44,7 @@ from ..services.recognition import get_index
 from ..services.timesheet import (
     build_timesheet,
     get_timezone,
+    list_departments,
     summarise,
     to_csv,
     to_local,
@@ -60,7 +69,20 @@ class EmployeeForm(FlaskForm):
     last_name = StringField("Surname", validators=[DataRequired(), Length(max=64)])
     department = StringField("Department", validators=[Optional(), Length(max=64)])
     email = StringField("Email", validators=[Optional(), Email(), Length(max=190)])
+    shift_pattern_id = SelectField("Shift", coerce=int, validators=[Optional()])
     is_active = BooleanField("Active", default=True)
+
+
+class ShiftPatternForm(FlaskForm):
+    name = StringField("Name", validators=[DataRequired(), Length(max=64)])
+    start_time = TimeField("Start (local time)", validators=[DataRequired()])
+    end_time = TimeField("End (local time)", validators=[DataRequired()])
+    unpaid_break_minutes = IntegerField(
+        "Unpaid break (minutes)",
+        default=0,
+        validators=[NumberRange(min=0, max=480, message="Between 0 and 480 minutes.")],
+    )
+    is_default = BooleanField("Default shift for employees without one assigned")
 
 
 class ManualEventForm(FlaskForm):
@@ -121,6 +143,12 @@ def _employee_choices() -> list[tuple[int, str]]:
     return [(e.id, f"{e.last_name}, {e.first_name} ({e.payroll_ref})") for e in employees]
 
 
+def _shift_choices() -> list[tuple[int, str]]:
+    """Options for the employee form; 0 stands in for "use the default shift"."""
+    patterns = db.session.scalars(select(ShiftPattern).order_by(ShiftPattern.name)).all()
+    return [(0, "Default shift")] + [(p.id, p.label) for p in patterns]
+
+
 # --------------------------------------------------------------------------
 # Dashboard
 # --------------------------------------------------------------------------
@@ -175,6 +203,7 @@ def employees():
 @bp.route("/employees/new", methods=["GET", "POST"])
 def employee_new():
     form = EmployeeForm()
+    form.shift_pattern_id.choices = _shift_choices()
     if form.validate_on_submit():
         clash = db.session.scalars(
             select(Employee).where(Employee.payroll_ref == form.payroll_ref.data)
@@ -189,6 +218,7 @@ def employee_new():
             last_name=(form.last_name.data or "").strip(),
             department=(form.department.data or "").strip() or None,
             email=(form.email.data or "").strip() or None,
+            shift_pattern_id=form.shift_pattern_id.data or None,
             is_active=bool(form.is_active.data),
         )
         db.session.add(employee)
@@ -203,6 +233,9 @@ def employee_new():
 def employee_edit(employee_id: int):
     employee = db.get_or_404(Employee, employee_id)
     form = EmployeeForm(obj=employee)
+    form.shift_pattern_id.choices = _shift_choices()
+    if request.method == "GET":
+        form.shift_pattern_id.data = employee.shift_pattern_id or 0
     if form.validate_on_submit():
         clash = db.session.scalars(
             select(Employee).where(
@@ -218,6 +251,7 @@ def employee_edit(employee_id: int):
         employee.last_name = (form.last_name.data or "").strip()
         employee.department = (form.department.data or "").strip() or None
         employee.email = (form.email.data or "").strip() or None
+        employee.shift_pattern_id = form.shift_pattern_id.data or None
         employee.is_active = bool(form.is_active.data)
         db.session.commit()
         flash(f"Updated {employee.full_name}.", "success")
@@ -297,20 +331,23 @@ def employee_enrol_clear(employee_id: int):
 def _timesheet_args():
     tz = _tz()
     today = dt.datetime.now(tz).date()
-    default_start = today - dt.timedelta(days=today.weekday())  # Monday this week
+    default_start = today - dt.timedelta(days=27)  # last four weeks, today inclusive
     start = _parse_date(request.args.get("start"), default_start)
     end = _parse_date(request.args.get("end"), today)
     if end < start:
         start, end = end, start
     raw_employee = request.args.get("employee_id")
     employee_id = int(raw_employee) if raw_employee and raw_employee.isdigit() else None
-    return start, end, employee_id, tz
+    department = (request.args.get("department") or "").strip() or None
+    return start, end, employee_id, department, tz
 
 
 @bp.get("/timesheets")
 def timesheets():
-    start, end, employee_id, tz = _timesheet_args()
-    shifts = build_timesheet(start, end, tz, employee_id=employee_id)
+    start, end, employee_id, department, tz = _timesheet_args()
+    shifts = build_timesheet(
+        start, end, tz, employee_id=employee_id, department=department
+    )
     return render_template(
         "admin/timesheets.html",
         shifts=shifts,
@@ -318,6 +355,8 @@ def timesheets():
         start=start,
         end=end,
         employee_id=employee_id,
+        department=department,
+        departments=list_departments(),
         employees=db.session.scalars(
             select(Employee).order_by(Employee.last_name, Employee.first_name)
         ).all(),
@@ -326,14 +365,94 @@ def timesheets():
 
 @bp.get("/timesheets.csv")
 def timesheets_csv():
-    start, end, employee_id, tz = _timesheet_args()
-    shifts = build_timesheet(start, end, tz, employee_id=employee_id)
+    start, end, employee_id, department, tz = _timesheet_args()
+    shifts = build_timesheet(
+        start, end, tz, employee_id=employee_id, department=department
+    )
     filename = f"timesheet_{start.isoformat()}_to_{end.isoformat()}.csv"
     return Response(
         to_csv(shifts),
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# --------------------------------------------------------------------------
+# Shift patterns
+# --------------------------------------------------------------------------
+def _save_shift_pattern(form: ShiftPatternForm, pattern: ShiftPattern | None) -> bool:
+    """Apply the form to *pattern* (or a new one). Returns False on a name clash."""
+    clash = db.session.scalars(
+        select(ShiftPattern).where(
+            ShiftPattern.name == (form.name.data or "").strip(),
+            ShiftPattern.id != (pattern.id if pattern else 0),
+        )
+    ).first()
+    if clash is not None:
+        flash(f"A shift called {form.name.data!r} already exists.", "error")
+        return False
+
+    if pattern is None:
+        pattern = ShiftPattern()
+        db.session.add(pattern)
+    pattern.name = (form.name.data or "").strip()
+    pattern.start_time = form.start_time.data
+    pattern.end_time = form.end_time.data
+    pattern.unpaid_break_minutes = int(form.unpaid_break_minutes.data or 0)
+
+    if form.is_default.data:
+        # Only one pattern can be the default at a time.
+        for other in db.session.scalars(select(ShiftPattern)).all():
+            other.is_default = other is pattern
+        pattern.is_default = True
+    else:
+        pattern.is_default = False
+
+    db.session.commit()
+    return True
+
+
+@bp.route("/shifts", methods=["GET", "POST"])
+def shifts():
+    form = ShiftPatternForm()
+    if form.validate_on_submit() and _save_shift_pattern(form, None):
+        flash(f"Added shift {form.name.data!r}.", "success")
+        return redirect(url_for("admin.shifts"))
+
+    patterns = db.session.scalars(
+        select(ShiftPattern).order_by(ShiftPattern.name)
+    ).all()
+    return render_template("admin/shifts.html", patterns=patterns, form=form, editing=None)
+
+
+@bp.route("/shifts/<int:pattern_id>/edit", methods=["GET", "POST"])
+def shift_edit(pattern_id: int):
+    pattern = db.get_or_404(ShiftPattern, pattern_id)
+    form = ShiftPatternForm(obj=pattern)
+    if form.validate_on_submit() and _save_shift_pattern(form, pattern):
+        flash(f"Updated shift {pattern.name!r}.", "success")
+        return redirect(url_for("admin.shifts"))
+
+    patterns = db.session.scalars(
+        select(ShiftPattern).order_by(ShiftPattern.name)
+    ).all()
+    return render_template("admin/shifts.html", patterns=patterns, form=form, editing=pattern)
+
+
+@bp.post("/shifts/<int:pattern_id>/delete")
+def shift_delete(pattern_id: int):
+    pattern = db.get_or_404(ShiftPattern, pattern_id)
+    # Employees pointing at it fall back to the default shift (FK is SET NULL).
+    for employee in list(pattern.employees):
+        employee.shift_pattern_id = None
+    name = pattern.name
+    db.session.delete(pattern)
+    db.session.commit()
+    flash(
+        f"Deleted shift {name!r}. Anyone assigned to it now uses the default shift.",
+        "success",
+    )
+    return redirect(url_for("admin.shifts"))
 
 
 # --------------------------------------------------------------------------

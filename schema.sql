@@ -16,18 +16,36 @@ CREATE TABLE admin_user (
 	CONSTRAINT uq_admin_username UNIQUE (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE employee (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	payroll_ref VARCHAR(32) NOT NULL, 
-	first_name VARCHAR(64) NOT NULL, 
-	last_name VARCHAR(64) NOT NULL, 
-	department VARCHAR(64), 
-	email VARCHAR(190), 
-	is_active BOOL NOT NULL, 
-	created_at DATETIME NOT NULL, 
-	PRIMARY KEY (id), 
-	UNIQUE (payroll_ref)
+CREATE TABLE shift_pattern (
+	id INTEGER NOT NULL AUTO_INCREMENT,
+	name VARCHAR(64) NOT NULL,
+	start_time TIME NOT NULL,
+	end_time TIME NOT NULL,
+	unpaid_break_minutes INTEGER NOT NULL,
+	is_default BOOL NOT NULL,
+	created_at DATETIME NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE employee (
+	id INTEGER NOT NULL AUTO_INCREMENT,
+	payroll_ref VARCHAR(32) NOT NULL,
+	first_name VARCHAR(64) NOT NULL,
+	last_name VARCHAR(64) NOT NULL,
+	department VARCHAR(64),
+	email VARCHAR(190),
+	is_active BOOL NOT NULL,
+	shift_pattern_id INTEGER,
+	created_at DATETIME NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (payroll_ref),
+	FOREIGN KEY(shift_pattern_id) REFERENCES shift_pattern (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Upgrading a database created before the shifts feature:
+--   ALTER TABLE employee ADD COLUMN shift_pattern_id INTEGER;
+-- (scripts/init_db.py does this automatically when re-run.)
 
 CREATE TABLE attendance_event (
 	id INTEGER NOT NULL AUTO_INCREMENT, 

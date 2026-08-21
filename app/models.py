@@ -21,6 +21,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    Time,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -48,6 +49,42 @@ def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
 
+class ShiftPattern(db.Model):
+    """A paid time band, e.g. 07:30-16:00 with a 30-minute unpaid lunch.
+
+    Times are *local* wall-clock times (the timezone the site runs in), not UTC:
+    a 07:30 start means 07:30 on the shop floor all year round, either side of
+    the BST/GMT change. An end time at or before the start time means the shift
+    runs overnight into the next day.
+    """
+
+    __tablename__ = "shift_pattern"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    start_time: Mapped[dt.time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[dt.time] = mapped_column(Time, nullable=False)
+    unpaid_break_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+
+    employees: Mapped[list["Employee"]] = relationship(back_populates="shift_pattern")
+
+    @property
+    def crosses_midnight(self) -> bool:
+        return self.end_time <= self.start_time
+
+    @property
+    def label(self) -> str:
+        return (
+            f"{self.name} ({self.start_time.strftime('%H:%M')}"
+            f"–{self.end_time.strftime('%H:%M')})"
+        )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ShiftPattern {self.name} {self.start_time}-{self.end_time}>"
+
+
 class Employee(db.Model):
     __tablename__ = "employee"
 
@@ -58,6 +95,10 @@ class Employee(db.Model):
     department: Mapped[str | None] = mapped_column(String(64))
     email: Mapped[str | None] = mapped_column(String(190))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # NULL means "use the default shift pattern", so new starters need no setup.
+    shift_pattern_id: Mapped[int | None] = mapped_column(
+        ForeignKey("shift_pattern.id", ondelete="SET NULL")
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
 
     templates: Mapped[list["FaceTemplate"]] = relationship(
@@ -66,6 +107,7 @@ class Employee(db.Model):
     events: Mapped[list["AttendanceEvent"]] = relationship(
         back_populates="employee", cascade="all, delete-orphan", lazy="select"
     )
+    shift_pattern: Mapped[ShiftPattern | None] = relationship(back_populates="employees")
 
     @property
     def full_name(self) -> str:

@@ -27,8 +27,13 @@ no GPU, and nothing to install beyond `pip install -r requirements.txt`.
 - Employees: add, edit, search, deactivate.
 - Enrolment: capture several face samples through the browser, with checks that
   they are all the same person and not somebody already enrolled.
-- Timesheets: date range, per-employee filter, hours per shift, totals, CSV
-  export for payroll.
+- Timesheets: date range (defaults to the last four weeks), department and
+  per-employee filters, clocked and paid hours per shift, totals, CSV export
+  for payroll.
+- Shifts: paid time bands (e.g. 07:30–16:00 with a 30-minute unpaid lunch).
+  Clocking in early pays from the shift start, clocking out late pays to the
+  shift end, and pay is counted in 15-minute steps — a 07:34 arrival is paid
+  from 07:45. One shift is the default; employees can be assigned another.
 - Manual entry and voiding for corrections — both fully audited.
 - Camera check: measures what your camera actually produces so the recognition
   thresholds can be set from real numbers rather than guesses.
